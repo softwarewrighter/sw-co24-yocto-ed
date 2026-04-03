@@ -1,0 +1,3979 @@
+
+
+
+
+I want to create a micro emacs editor.  Initially it can be written in C or assembler, but I want it to be written as much as possible using my own macro lisp interpreter that runs on a target COR24 ISA.  What is the simplest bootstrapping approach.  I want to start super simple, with a line editor like ed (or mainframe editors on VM and MVS that were line oriented originally.  Think a 1 line edit buffer with a 1 line mode line and a 1 line input buffer.  Repaints the three lines each time I press enter.  The keybindings need to be serial I/O UART friendly.  we can use an escape for meta to start and everything can be done with M-x.  Initially, the file to be edited will be pre-loaded at a fixed address in memory.  The editor can allocate heap from another dedicated region of memory, and the editor can use the small 3K EBR stack for function calls, but could also use another stack at a third region in memory. So, initially, address 0 has the editor code entry point, adress 10000 has a buffer of ascii to be edited, adress 20000 is the bottom of a FFFF sized heap,  Address 40000 is the top of a FFFF sized stack.  Later the Macro lisp interpreter will be loaded above this and somehow callable (postpone that).  For now I need basic buffer navigation, begin-of-{buffer,line,word}, end-of-{buffer,line,word}, next-{char,word,line}, previous-{char,word,line} delete-prior-{char,word,line} delete-next-{char,word,line}.  move cursor up, down, left, right.  insert mode by default (overwrite-mode in the far future).  mode-line should show: line count, buffer size, current column, current row.  clean/dirty bit.  commands include: save (copy changes to original buffer--no backups or versions yet).  new-buffer (clear the buffer},  quit.  Any more for a MVP?
+
+You want the smallest plausible bootstrap path to a Micro-Emacs-like editor on COR24, with these constraints:
+
+runs first as a very small standalone program
+
+UART/serial friendly
+
+initially no full-screen live cursor motion on every keystroke
+
+repaint only after Enter
+
+fixed memory layout
+
+file already preloaded in memory
+
+later migrate as much logic as possible into your Macro Lisp
+
+start with a line-oriented command model, but shape it so it can evolve toward Emacs
+
+That points to a very specific answer:
+
+Recommendation
+The simplest bootstrapping approach is not to start with “Micro Emacs” directly.
+It is to build:
+
+a tiny buffer core in C or assembler
+
+a command loop that is essentially an ed-like line editor with Emacs-flavored names
+
+a minimal display layer that renders exactly 3 lines:
+
+current edit line / view line
+
+mode line
+
+minibuffer / command input
+
+an internal command dispatch structure designed so later:
+
+today: commands are native C/asm functions
+
+later: commands can be rebound to Lisp symbols/functions
+
+So the real bootstrap is:
+
+Stage 0: native core + native commands
+Stage 1: native core + command table exposed to Lisp
+Stage 2: editing logic increasingly moved into Lisp
+Stage 3: Lisp-defined commands/macros/keymaps, native primitives underneath
+
+This is the least risky path because the editor core needs a few things that are painful to bootstrap entirely in Lisp too early:
+
+memory management
+
+buffer mutation
+
+cursor motion
+
+span deletion/insertion
+
+display rendering
+
+command parsing from UART
+
+High-level architecture
+You only need four subsystems for MVP:
+
+1. Buffer model
+Represents editable text and cursor position.
+
+2. Command interpreter
+Reads a line from UART, parses it, executes one command.
+
+3. Three-line renderer
+After every command, redraw:
+
+text line
+
+status line
+
+minibuffer/result line
+
+4. Persistence/copy-back
+For now:
+
+source buffer at fixed address
+
+working copy in heap-managed editable storage
+
+save copies working buffer back to original address
+
+That is enough.
+
+Nonfunctional goals for the bootstrap
+You want the design to survive the transition to Lisp, so optimize for:
+
+Simplicity
+Use the simplest internal representation that supports movement and edits.
+
+Inspectability
+You should be able to dump state over UART and debug it easily.
+
+Replaceability
+Anything that will later become Lisp should sit behind a tiny command interface.
+
+Bounded memory behavior
+Because this is an embedded target, make failures explicit:
+
+out of memory
+
+line too long
+
+buffer too large
+
+invalid command
+
+beginning/end of buffer reached
+
+Simplest viable internal design
+For bootstrapping, I strongly recommend:
+
+Use a gap buffer
+Not a rope, not a piece table, not a per-line linked list.
+
+A gap buffer is the best fit here because:
+
+Benefits
+simple to implement in C or assembler
+
+efficient local insert/delete around cursor
+
+natural cursor model
+
+later still usable under Lisp primitives
+
+easy to save by linearizing around the gap
+
+Costs
+moving cursor long distances requires moving bytes
+
+line count / column can be expensive unless cached
+
+Those costs are fine for MVP.
+
+Memory layout suggestion
+You proposed:
+
+0x000000 editor code entry
+
+0x010000 source/original buffer
+
+0x020000 heap bottom
+
+0x040000 stack top
+
+That is workable.
+
+For the editor bootstrap, I would refine it logically as:
+
+Fixed regions
+editor code + static data: low memory
+
+original/source buffer: fixed read/write region
+
+editor working buffer arena: heap region
+
+optional alternate editor data stack / scratch
+
+call stack: EBR or separate stack
+
+Working buffer structure
+At startup:
+
+copy source buffer into editable working buffer
+
+leave extra gap space in the middle or at the cursor
+
+Example conceptual layout:
+
+working_buffer:
+  [text before gap][GAP.................][text after gap]
+State:
+
+struct Buffer {
+    char* base;
+    u24 capacity;
+    u24 gap_start;
+    u24 gap_end;
+    u24 dirty;
+};
+Derived:
+
+size = capacity - (gap_end - gap_start)
+
+point = gap_start
+
+This is ideal because point == cursor by construction.
+
+What should be native versus Lisp
+For bootstrapping, keep these native:
+
+Native primitives
+allocate/init buffer
+
+copy source into working buffer
+
+insert char/string at point
+
+delete char(s) before/after point
+
+move point left/right
+
+scan for line boundary
+
+scan for word boundary
+
+render current line/view
+
+copy back on save
+
+parse command line into opcode + args
+
+UART I/O
+
+Later expose these as Lisp-callable primitives.
+
+Then Lisp can own:
+
+Lisp later
+command naming
+
+key dispatch
+
+aliases
+
+composite operations
+
+mini macros
+
+higher-level navigation/edit commands
+
+mode behavior
+
+eventually M-x
+
+This gives you a classic layered editor architecture:
+
+machine-near kernel
+
+language-level editor personality
+
+Display model
+Your 3-line display is good and should stay minimal:
+
+Line 1: current edit line / view line
+Show the current logical line containing point.
+
+Because UART is serial-friendly, do not attempt full terminal cursor addressing initially unless you want VT100 escape support. Instead:
+
+TEXT> the quick brown fox jumps over the lazy dog
+And indicate point explicitly, for example:
+
+Option A: second marker line
+TEXT> the quick brown fox jumps over the lazy dog
+      ----------------^
+But that uses 4 lines total.
+
+Option B: inline point marker
+TEXT> the quick brown fox |jumps over the lazy dog
+This is better for your 3-line budget.
+
+I would recommend rendering the visible current line with | inserted at point.
+
+Line 2: mode line
+Exactly what you asked for:
+
+row
+
+col
+
+lines
+
+size
+
+dirty/clean
+
+maybe command state
+
+Example:
+
+-- COR24-ME  row:12 col:8 lines:93 size:1840 dirty --
+For later extensibility, add a short mode token:
+
+INS
+
+CMD
+
+MINI
+
+Example:
+
+-- INS row:12 col:8 lines:93 size:1840 dirty --
+Line 3: minibuffer / input
+Used for:
+
+entering commands
+
+showing errors
+
+showing prompts
+
+Example:
+
+M-x next-word
+or
+
+ERR: end of buffer
+This is exactly the right bootstrap user interface.
+
+Command model
+For serial/UART friendliness, yes: start with command-per-Enter, not character-at-a-time editing commands.
+
+That means the user types into minibuffer, presses Enter, the editor executes, and redraws.
+
+This is a very strong choice because:
+
+no dependency on terminal raw mode sophistication
+
+no need for incremental key event decoding at first
+
+no arrow key parsing
+
+easy to debug
+
+maps well to future M-x
+
+Simplest command syntax
+I would avoid trying to emulate full ed syntax or full Emacs syntax immediately.
+
+Use something like:
+
+g bol
+g eol
+g bob
+g eob
+g fwd-char
+g back-char
+g next-word
+g prev-word
+g next-line
+g prev-line
+d back-char
+d next-char
+d back-word
+d next-word
+d line
+i hello world
+save
+new
+quit
+help
+Where:
+
+g = goto/move
+
+d = delete
+
+i = insert literal text at point
+
+This is simpler than full M-x parsing, but shaped similarly.
+
+Then later support synonyms:
+
+M-x beginning-of-line
+M-x forward-char
+M-x delete-backward-char
+Internally each command maps to one opcode.
+
+Minimal command set for MVP
+You listed a good initial set. I would tighten it slightly into what is truly necessary first, then a near-term phase 2.
+
+MVP-1: absolute essentials
+Movement
+beginning-of-buffer
+
+end-of-buffer
+
+beginning-of-line
+
+end-of-line
+
+forward-char
+
+backward-char
+
+next-line
+
+previous-line
+
+Editing
+insert-text
+
+delete-backward-char
+
+delete-forward-char
+
+kill-line or delete-line
+
+Buffer ops
+save-buffer
+
+new-buffer
+
+quit
+
+Info
+help
+
+status optionally
+
+That is enough to build, test, and use.
+
+MVP-2: strongly recommended next commands
+Word movement
+forward-word
+
+backward-word
+
+beginning-of-word
+
+end-of-word
+
+Word deletion
+delete-backward-word
+
+delete-forward-word
+
+Navigation helpers
+goto-line N
+
+set-mark is not needed yet
+
+search can wait
+
+Editing helpers
+open-line
+
+insert-newline
+
+Commands I would postpone
+These are tempting but not needed for bootstrap:
+
+overwrite mode
+
+mark/region
+
+kill ring
+
+undo
+
+search
+
+replace
+
+multiple buffers
+
+windows
+
+auto-wrap/fill
+
+incremental redisplay
+
+raw escape-sequence cursor movement
+
+file I/O proper
+
+syntax modes
+
+All of those can come later.
+
+One important MVP addition you are missing
+You need insert-newline explicitly.
+
+Even if the source buffer already contains newlines, editing becomes awkward without a way to create one.
+
+So I would absolutely include:
+
+newline
+
+maybe alias nl
+
+Similarly, I would include:
+
+delete-line or kill-line
+
+because line-oriented editing feels crippled without it.
+
+So the most important additions are:
+
+newline
+
+delete-line
+
+goto-line N (very useful even in MVP)
+
+Line/word semantics
+You should define these early because later Lisp commands will depend on them.
+
+Line
+A line is bytes from:
+
+start of buffer or previous \n
+to
+
+next \n or end of buffer
+
+Word
+Simplest definition:
+
+word chars = [A-Za-z0-9_]
+
+everything else is separator
+
+That is enough.
+
+Row/column tracking
+You want the mode line to show:
+
+line count
+
+buffer size
+
+current column
+
+current row
+
+dirty bit
+
+That is good, but computing these from scratch every command can get expensive.
+
+For MVP, it is still okay to recompute by scanning from the start of the buffer because:
+
+code stays simple
+
+performance is probably acceptable for small text buffers
+
+So I recommend:
+
+MVP approach
+Recompute on demand:
+
+row = count newlines before point + 1
+
+col = chars since last newline
+
+line count = count newlines in whole buffer + 1 if nonempty
+
+size = logical buffer size
+
+Later optimize with caches if needed.
+
+Bootstrap implementation sequence
+Here is the simplest implementation plan.
+
+Phase 0: Native-only editor kernel
+Write this in C or assembler.
+
+Step 1. UART line input/output
+Need:
+
+read line into minibuffer
+
+print strings
+
+print numbers
+
+clear/repaint three lines in simple text form
+
+Step 2. Read source buffer
+Assume preloaded text at fixed address.
+Need either:
+
+NUL-terminated text
+or
+
+fixed size field stored elsewhere
+
+Best is to define:
+
+source buffer is NUL-terminated ASCII
+
+That simplifies startup.
+
+Step 3. Gap buffer
+Implement:
+
+init from source
+
+move left/right
+
+insert char/string
+
+delete prev/next char
+
+linearize/save back
+
+Step 4. Basic line scanning helpers
+Implement:
+
+find BOL/EOL from point
+
+move to prev/next line
+
+compute row/col/lines
+
+Step 5. Renderer
+Given point:
+
+render current line with | at point
+
+render mode line
+
+render minibuffer prompt/result
+
+Step 6. Command parser
+Map strings to opcodes.
+
+Step 7. Save/new/quit
+Now you have an editor.
+
+Suggested first concrete command vocabulary
+For bootstrap/debuggability, keep both short and long forms.
+
+Movement
+bol
+eol
+bob
+eob
+left
+right
+up
+down
+fwdw
+backw
+bow
+eow
+Editing
+ins hello
+nl
+del
+backdel
+delw
+backdelw
+delline
+Buffer
+save
+new
+quit
+Utility
+help
+stat
+goto 42
+Then later alias them to Emacs-like names:
+
+beginning-of-line
+
+forward-char
+
+etc.
+
+Data structures
+Here is a minimal native structure set.
+
+Editor state
+struct Editor {
+    struct Buffer buf;
+    char* source_base;
+    u24 source_capacity;
+    char minibuf[MINI_MAX];
+    u24 last_status_code;
+    char status_msg[STATUS_MAX];
+    u8 quit_requested;
+};
+Buffer
+struct Buffer {
+    char* base;
+    u24 capacity;
+    u24 gap_start;
+    u24 gap_end;
+    u8 dirty;
+};
+That may be enough.
+
+You do not need explicit per-line structures yet.
+
+Why not linked lines for bootstrap?
+A per-line linked list seems attractive because the UI is line-oriented.
+But it complicates:
+
+word movement across lines
+
+save linearization
+
+heap fragmentation
+
+deletion joining/splitting lines
+
+later transition to more Emacs-like character editing
+
+A gap buffer is more universal.
+
+If you later want a line cache or line index, add it on top.
+
+How to prepare for Macro Lisp
+Design the command interface now as if Lisp will call it later.
+
+Native command interface concept
+Every command should look conceptually like:
+
+(command editor-state args...) -> status/result
+Even in C, structure it this way.
+
+For example:
+
+cmd_bol(editor)
+
+cmd_insert(editor, "hello")
+
+cmd_delete_forward_word(editor)
+
+Then later Lisp bindings can wrap the same primitives:
+
+(bol)
+
+(insert "hello")
+
+(delete-forward-word)
+
+This gives you a clean migration path.
+
+Best bootstrapping path toward Lisp ownership
+Here is the cleanest staged migration.
+
+Stage A
+Editor is all native.
+
+Stage B
+Embed a tiny symbol table / command registry:
+
+command name string
+
+function pointer
+
+maybe flags / arg count
+
+Stage C
+When Lisp arrives, add:
+
+Lisp can invoke native commands
+
+Lisp can define aliases/composite commands
+
+Example:
+
+(defun kill-to-eol ()
+  (end-of-line)
+  ...)
+Stage D
+Move parser and key dispatch into Lisp.
+Keep buffer ops native.
+
+Stage E
+Move more policy into Lisp:
+
+mode line formatting
+
+command aliases
+
+keymaps
+
+command loops
+
+This is much more realistic than trying to make Lisp own text storage too early.
+
+Suggested MVP command categories
+For your stated goals, I would define the MVP as these buckets.
+
+1. Cursor motion
+Required.
+
+2. Text mutation
+Required.
+
+3. Buffer lifecycle
+Required.
+
+4. Status/reporting
+Required.
+
+5. Error handling
+Required.
+
+Without category 5 the editor will feel fragile.
+
+You need consistent return codes/messages such as:
+
+OK
+
+ERR beginning-of-buffer
+
+ERR end-of-buffer
+
+ERR no room
+
+ERR invalid command
+
+Minimum viable user experience
+A session might look like:
+
+TEXT> hello |world
+-- INS row:1 col:7 lines:1 size:11 clean --
+CMD> left
+after Enter:
+
+TEXT> hello| world
+-- INS row:1 col:6 lines:1 size:11 dirty --
+CMD> ins brave 
+after Enter:
+
+TEXT> hello brave |world
+-- INS row:1 col:12 lines:1 size:17 dirty --
+CMD> save
+This is already very usable over UART.
+
+Risks and tradeoffs
+Gap buffer
+Pros
+
+simplest useful structure
+
+efficient local edits
+
+easy save path
+
+Cons
+
+large cursor jumps cost byte moves
+
+Acceptable for MVP.
+
+Repaint-on-enter only
+Pros
+
+trivial UART model
+
+easy debugging
+
+no terminal dependency
+
+Cons
+
+clunky user experience
+
+not “real Emacs” feeling yet
+
+Still correct for bootstrap.
+
+Native core first
+Pros
+
+gets working quickly
+
+easier debugging on COR24
+
+stable substrate for Lisp
+
+Cons
+
+later migration work
+
+some duplication if you later rewrite too much in Lisp
+
+Still the best path.
+
+Fixed memory map
+Pros
+
+easy bootstrap
+
+deterministic
+
+Cons
+
+rigid
+
+later relocation/loading needs redesign
+
+Fine for early development.
+
+My recommendation for the exact MVP scope
+Yes, you are close, but I would define MVP as:
+
+Required
+begin/end of buffer
+
+begin/end of line
+
+left/right/up/down
+
+forward/backward word
+
+insert text
+
+newline
+
+delete backward char
+
+delete forward char
+
+delete line
+
+save
+
+new buffer
+
+quit
+
+help
+
+goto line
+
+Defer
+begin/end of word as separate commands unless trivial
+
+delete previous/next line as distinct variants
+
+overwrite mode
+
+buffer list
+
+search
+
+mark/region
+
+undo
+
+Your currently proposed command set is slightly too broad in one place and slightly too narrow in another:
+
+too broad: too many directional delete variants immediately
+
+too narrow: missing newline, delete-line, goto-line
+
+Simplest bootstrap plan in one sentence
+Build a native 3-line, command-on-Enter, gap-buffer editor whose commands are structured as future Lisp-callable primitives.
+
+That is the shortest path from “tiny line editor” to “Micro Emacs written mostly in Macro Lisp.”
+
+Concrete next step
+I’d suggest the first implementation milestone be:
+
+Milestone 1
+NUL-terminated source buffer at fixed address
+
+working gap buffer copy
+
+commands:
+
+left right bol eol bob eob
+
+ins <text>
+
+del backdel
+
+nl
+
+save quit
+
+3-line repaint after every Enter
+
+Once that works, add:
+
+up down
+
+fwdw backw
+
+delline
+
+goto N
+
+mode line stats
+
+After that, you are ready to shape the command table so Lisp can begin taking over.
+
+If you want, I can sketch the buffer data structure, command table, and a staged module breakdown for a tiny C-first bootstrap that later hands commands off to Macro Lisp.
+
+
+(1) I wanted enter to insert a newline at point (when editing).  After escape the input toggles to the input line where a command is entered.  Hitting enter there returns to editing at point (your | marker).
+(2) need a project name.  FYI:  pico (
+), followed by femto (
+), atto (
+), zepto (
+), and yocto (
+).
+thre are alread mini-emacs, micro-emacs, possibly nano-emacs and pico-emacs, so maybe this is femto-emacs?  Alternatively I've been naming my tools with sw (Software Wrigther) prefix, so sw-emacs, but I do not plan to be compatible with emacs, so that is misleading.  Also this first version is small, and later versions will be bigger, so, something like sw-yoctoed now, sw-zepto-ed, then sw-atto-ed, eventually stopping at sw-femto-ed (or swye, swze, swae, and swfe commands (when this is integrated with my shell/scripting language "run swfe <filename>"
+
+Got it. That changes the interaction model in an important way.
+
+Updated interaction model
+You want two modes:
+
+1. Edit mode
+point is shown in the text line with |
+
+typed printable characters insert at point
+
+Enter inserts newline at point
+
+movement/edit keys are UART-friendly
+
+Escape switches to command mode
+
+2. Command mode
+input goes to the command/minibuffer line
+
+Enter executes the command
+
+after command completion, return to edit mode at point
+
+That is better than my previous “everything is command-on-Enter” model because it preserves a real editing feel while still staying serial-friendly.
+
+So the 3-line display becomes:
+
+TEXT> abc def|ghi
+MODE> INS row:12 col:8 lines:93 size:1840 dirty
+CMD > 
+Then after Escape:
+
+TEXT> abc def|ghi
+MODE> CMD row:12 col:8 lines:93 size:1840 dirty
+CMD > save
+Press Enter there, run command, then return to:
+
+TEXT> abc def|ghi
+MODE> INS row:12 col:8 lines:93 size:1840 clean
+CMD > saved
+That is a strong MVP.
+
+Architecture impact
+This means your bootstrap should support:
+
+Input state machine
+A tiny state machine is enough:
+
+STATE_EDIT
+
+STATE_COMMAND
+
+In STATE_EDIT:
+
+printable chars insert
+
+Enter inserts \n
+
+Escape enters command mode
+
+Backspace deletes backward-char
+
+maybe Ctrl-D or a chosen serial-safe key deletes forward-char
+
+maybe Ctrl-B/Ctrl-F/Ctrl-P/Ctrl-N for left/right/up/down later
+
+In STATE_COMMAND:
+
+chars append to command buffer
+
+Backspace edits command buffer
+
+Enter parses/executes command, clears or preserves minibuffer, returns to STATE_EDIT
+
+Escape cancels command and returns to STATE_EDIT
+
+That is still simple enough for assembler or C.
+
+Naming requirements
+You want a name that:
+
+reflects the tiny bootstrap nature
+
+does not overpromise Emacs compatibility
+
+can fit a staged size progression
+
+works with sw- branding if desired
+
+ideally gives short shell commands
+
+And you already noticed the problem with sw-emacs:
+
+it implies more compatibility than you want
+
+it ties you too tightly to Emacs semantics too early
+
+I agree: avoid sw-emacs.
+
+Best naming strategy
+I think you actually have two separate naming problems:
+
+1. Product/family name
+The editor family across stages.
+
+2. Executable command names
+Short names that work nicely in scripts.
+
+You do not need them to be identical.
+
+That gives you more freedom.
+
+Recommendation: use a neutral family name, and size-based stage names
+Instead of naming the whole family after Emacs, name it after a small editor kernel or editing environment, then use yocto/zepto/atto/femto for stages.
+
+For example:
+
+family: sw-ed
+
+staged implementations:
+
+sw-yocto-ed
+
+sw-zepto-ed
+
+sw-atto-ed
+
+sw-femto-ed
+
+That works much better than sw-emacs, because:
+
+ed is honest
+
+line-oriented origins are honest
+
+later growth is still fine
+
+you avoid claiming Emacs compatibility
+
+Then, when it becomes more Emacs-like later, you could still describe it as:
+
+“an Emacs-inspired programmable editor”
+without baking that claim into the executable name.
+
+My opinion on your candidate names
+femto-emacs
+Pros
+
+cute
+
+indicates small size
+
+immediately understandable
+
+Cons
+
+still implies Emacs compatibility/culture
+
+if it is really not Emacs-compatible, the name misleads
+
+by the time you reach “femto”, it may no longer be very tiny anyway
+
+I would only use this if you explicitly want:
+
+“Emacs-inspired, not compatible”
+
+Otherwise I would avoid it.
+
+sw-emacs
+Pros
+
+simple
+
+branded
+
+Cons
+
+misleading, for exactly the reason you gave
+
+creates compatibility expectations
+
+future users will assume Lisp model, keybindings, buffers, maybe file format behavior
+
+I would not use this.
+
+sw-yocto-ed, sw-zepto-ed, sw-atto-ed, sw-femto-ed
+Pros
+
+honest
+
+nice staged progression
+
+branded
+
+command names are manageable
+
+suitable for scripting
+
+leaves room for large semantic evolution
+
+Cons
+
+slightly long
+
+yocto/zepto/atto/femto may be cute but not descriptive to casual users
+
+Still, among your current ideas, this is the strongest family.
+
+Best concrete naming options
+Here are the naming patterns I think are best.
+
+Option A: staged sw-*-ed
+This is my top recommendation.
+
+Family
+sw-ed
+
+Stages
+sw-yocto-ed
+
+sw-zepto-ed
+
+sw-atto-ed
+
+sw-femto-ed
+
+Short commands
+swye
+
+swze
+
+swae
+
+swfe
+
+This is clean and honest.
+
+It also works well in documentation:
+
+The current bootstrap editor is sw-yocto-ed.
+Later the programmable editor core evolves through sw-zepto-ed and sw-atto-ed toward sw-femto-ed.
+That reads well.
+
+Option B: family name + stage codename
+If you want more identity than just ed, use a neutral family name.
+
+Examples:
+
+sw-meld
+
+sw-scribe
+
+sw-craft
+
+sw-write
+
+sw-leaf
+
+sw-le
+
+Then stage them separately in docs, but keep executable stable.
+
+For example:
+
+executable: swle
+
+internal versions: yocto / zepto / atto / femto
+
+This is cleaner for long-term UX, but it loses the nice explicit size progression in the executable names.
+
+Option C: one permanent short name, stage names only in docs
+Example:
+
+program: swed
+
+internal release tiers:
+
+Yocto
+
+Zepto
+
+Atto
+
+Femto
+
+This is attractive because:
+
+users keep one command
+
+architecture can evolve freely
+
+stage naming becomes descriptive, not structural
+
+But from your message, it sounds like you like the progression being visible in the names.
+
+My recommendation
+I would choose:
+
+Project family
+sw-ed
+
+Current bootstrap implementation
+sw-yocto-ed
+
+Future staged names
+sw-zepto-ed
+
+sw-atto-ed
+
+sw-femto-ed
+
+Short shell commands
+swye
+
+swze
+
+swae
+
+swfe
+
+That gives you:
+
+honest naming
+
+a clean evolutionary story
+
+no misleading Emacs compatibility claim
+
+room to move more and more into Macro Lisp later
+
+One refinement I strongly suggest
+Use the size name as the implementation tier, not necessarily as a strict rewrite boundary.
+
+So:
+
+sw-yocto-ed: tiny bootstrap editor
+
+sw-zepto-ed: improved command model, maybe Lisp hooks
+
+sw-atto-ed: programmable command registry, more structured display
+
+sw-femto-ed: stable programmable editor kernel
+
+That lets the names describe maturity bands rather than forcing complete rewrites.
+
+Suggested command naming inside the editor
+Since you do not want to promise Emacs compatibility, I would still borrow Emacs-style internal command names where useful, because they are descriptive.
+
+Examples:
+
+forward-char
+
+backward-char
+
+next-line
+
+previous-line
+
+beginning-of-line
+
+end-of-line
+
+save-buffer
+
+quit
+
+That is fine even if the editor itself is not “Emacs”.
+
+Then the external project name can remain sw-yocto-ed.
+
+MVP additions for the updated edit/command model
+With your revised mode model, I would define MVP as:
+
+Edit mode keys
+printable chars: insert
+
+Enter: newline
+
+Escape: enter command mode
+
+Backspace: delete backward char
+
+Command mode commands
+left, right, up, down
+
+bol, eol, bob, eob
+
+fwdw, backw
+
+del, backdel, delline
+
+save
+
+new
+
+quit
+
+goto N
+
+help
+
+That is enough to feel editor-like while staying serial-safe.
+
+If you want the cleanest single recommendation
+I would name it:
+
+sw-yocto-ed
+and describe it as:
+
+a tiny programmable text editor bootstrap for COR24, intended to evolve toward a more Lisp-driven editor environment
+
+That says exactly what it is, without pretending to be Emacs.
+
+If you want, I can next sketch a state machine + data structure layout for sw-yocto-ed with edit mode, command mode, and the 3-line repaint behavior.
+
+
+also, for MVP, I think we need repeat command like n Ctrt-u passes a count to functions that can be applied repeatedly like 80 Ctrl-u right or 80 Ctrl-u enter * -- would insert 80 asterisks
+
+Yes — a repeat count / universal-argument-like prefix belongs in the MVP.
+
+It is not just a convenience feature; for a UART-friendly editor it is one of the main ways to keep the UI usable when you do not yet have rich screen control or full keymaps.
+
+Why it belongs in MVP
+Your interface has three constraints:
+
+serial/UART friendly
+
+very small command set
+
+repaint only in a minimal 3-line UI
+
+That means users will often need to:
+
+move many characters or lines
+
+insert repeated characters
+
+delete multiple chars/words/lines
+
+open vertical space with repeated newlines
+
+Without a repeat mechanism, even basic tasks become tedious.
+
+So I agree: put repeat in from the start.
+
+Recommendation
+Use a pending repeat count in editor state.
+
+Conceptually:
+
+default repeat = 1
+
+Ctrl-U enters “repeat prefix collection”
+
+digits accumulate the count
+
+the next repeatable command consumes it
+
+then repeat resets back to 1
+
+So examples become:
+
+Ctrl-U 80 right
+
+Ctrl-U 80 Enter
+
+Ctrl-U 10 backspace
+
+Ctrl-U 5 down
+
+That is the right model.
+
+Important correction to the key order
+You wrote:
+
+80 Ctrl-u right
+
+80 Ctrl-u enter *
+
+That feels natural in prose, but the cleaner implementation is the Emacs-like order:
+
+Ctrl-U 80 right
+
+Ctrl-U 80 *
+
+Ctrl-U 80 Enter
+
+or, if you want digit-first support later, you can add it as sugar.
+
+For MVP, I would standardize on:
+
+Prefix first
+Ctrl-U 80 right
+Ctrl-U 80 Enter
+Ctrl-U 80 *
+That keeps the parser/state machine simpler.
+
+Best semantics for your editor
+Because you have both edit mode and command mode, repeat should work in both.
+
+In edit mode
+Repeat applies to the next editing keystroke or motion keystroke.
+
+Examples:
+
+Ctrl-U 80 * inserts 80 asterisks
+
+Ctrl-U 80 Enter inserts 80 newlines
+
+Ctrl-U 12 right moves 12 chars right
+
+Ctrl-U 5 backspace deletes 5 chars backward
+
+In command mode
+Repeat applies to the next command if that command is repeatable.
+
+Examples:
+
+repeat 80 right
+
+or internally, count=80 before right
+
+goto-line probably should not be repeated
+
+save should not be repeated
+
+This gives one unified internal mechanism.
+
+Internal design
+Add these fields to editor state:
+
+struct RepeatState {
+    u24 count;          // accumulated count
+    u8 active;          // prefix is currently being entered
+    u8 explicit_count;  // distinguishes default 1 from user-supplied count
+};
+Or even simpler:
+
+struct Editor {
+    ...
+    u24 repeat_count;   // defaults to 1
+    u8 repeat_pending;  // 0/1
+};
+Semantics:
+
+initially:
+
+repeat_pending = 0
+
+repeat_count = 1
+
+when Ctrl-U is pressed:
+
+repeat_pending = 1
+
+if no digits yet, start with empty numeric entry or default to 4 if you want classic Emacs behavior
+
+when digits arrive while repeat is pending:
+
+accumulate decimal count
+
+when next repeatable command happens:
+
+use count = repeat_count
+
+execute
+
+reset repeat to default
+
+Should Ctrl-U default to 4 like Emacs?
+For this editor, I would say no, at least initially.
+
+Classic Emacs universal argument has behaviors like:
+
+C-u means 4
+
+repeated C-u multiplies by 4
+
+digits can modify it
+
+That is clever, but it adds complexity and user confusion.
+
+For your MVP, the better rule is:
+
+Simpler rule
+Ctrl-U means “the next digits form a repeat count”
+
+if no digits are entered and a command follows, either:
+
+interpret it as 1, or
+
+error / show “repeat count missing”
+
+I prefer:
+
+MVP behavior
+Ctrl-U with no digits, then command → repeat count = 4 only if you really want a nod to Emacs
+
+otherwise simpler:
+
+Ctrl-U then command → repeat count = 1 is pointless
+
+better to make it 4 or require digits
+
+My actual recommendation is:
+
+Recommended MVP rule
+Ctrl-U then digits then command
+
+if command appears without digits, use 4
+
+That gives useful behavior while staying manageable.
+
+What operations should be repeatable
+You should explicitly classify commands.
+
+Repeatable commands
+Motion
+left/right
+
+up/down
+
+beginning/end by line? maybe not useful
+
+next-word / previous-word
+
+forward-char / backward-char
+
+Editing
+insert char
+
+insert newline
+
+delete backward-char
+
+delete forward-char
+
+delete backward-word
+
+delete forward-word
+
+maybe delete line
+
+Possibly repeatable
+open-line
+
+transpose? later
+
+Non-repeatable commands
+save
+
+quit
+
+new-buffer
+
+help
+
+status
+
+goto-line N
+
+set-mark later
+
+mode changes
+
+That distinction matters because repeat should silently apply only where meaningful.
+
+How repeated insert should behave
+This is important.
+
+If the next action is insertion of a single character:
+
+Ctrl-U 80 * inserts 80 *
+
+If the next action is Enter in edit mode:
+
+Ctrl-U 80 Enter inserts 80 newline characters
+
+If the next action is a command-mode insertion command like:
+
+insert abc
+
+then either:
+
+insert "abc" 80 times
+or
+
+reject it because only single-keystroke insert is repeatable
+
+For MVP, keep it simple:
+
+MVP rule
+Repeat in edit mode applies naturally to single input actions:
+
+printable char
+
+Enter
+
+Backspace
+
+motion keys
+
+In command mode, repeat applies only to commands explicitly marked repeatable.
+
+For insert "abc" in command mode, I would initially not repeat the whole string unless you explicitly want that.
+
+One subtle design point: repeat and redraw
+Suppose the user does:
+
+Ctrl-U 80 right
+
+Do you redraw after each internal step, or only once at the end?
+
+For MVP:
+
+apply the operation in a loop internally
+
+redraw once after completion
+
+That keeps the UI simple and fast.
+
+Edge cases you should define now
+1. Movement hits boundary early
+Example:
+
+count = 80
+
+only 12 chars remain to end of line/buffer
+
+Two choices:
+
+stop at boundary and succeed partially
+
+error and undo partial movement
+
+Use:
+
+Recommended behavior
+perform as much as possible
+
+stop at boundary
+
+report partial completion if useful
+
+Example status:
+
+CMD > moved 12 of 80; end of buffer
+Same for delete.
+
+2. Insert exceeds capacity
+Example:
+
+Ctrl-U 5000 *
+
+Behavior:
+
+insert until no room, or fail atomically?
+
+For MVP, I recommend:
+
+Recommended behavior
+precheck available gap space if possible
+
+if insufficient, fail cleanly before partial insert
+
+For character repeat insertion, that is easy:
+
+need count bytes
+
+for newlines, same
+
+reject if not enough room
+
+That gives deterministic behavior.
+
+3. Repeat prefix cancellation
+If user types:
+
+Ctrl-U 80 Escape
+
+Then:
+
+cancel repeat and enter command mode? or
+
+treat Escape as the repeatable action?
+
+You need a clean rule.
+
+Recommended rule
+In edit mode:
+
+Ctrl-U starts prefix collection
+
+digits accumulate count
+
+Escape cancels prefix and enters command mode
+
+That feels natural.
+
+4. Count zero
+What does:
+
+Ctrl-U 0 right
+mean?
+
+I recommend:
+
+valid no-op
+
+consumes repeat
+
+redraw/status unchanged or “0 repeats”
+
+Do not overcomplicate this.
+
+Suggested implementation approach
+Represent repeat as a wrapper around primitive commands.
+
+Instead of every command handling loops itself, define something like:
+
+status apply_repeatable(Editor* ed, status (*fn)(Editor*)) {
+    u24 n = take_repeat_count(ed); // returns 1 if none pending
+    status last = OK;
+    for (u24 i = 0; i < n; i++) {
+        last = fn(ed);
+        if (last != OK) break;
+    }
+    return last;
+}
+Then:
+
+right
+
+left
+
+backspace
+
+newline
+
+etc.
+
+can be wrapped uniformly.
+
+For insertion of a printable char:
+
+status apply_repeatable_char(Editor* ed, char ch) { ... }
+This is a very clean bootstrap design.
+
+Suggested user-visible model
+In edit mode
+Ctrl-U opens a count prefix
+
+digits extend the count
+
+mode line can show pending repeat
+
+Example mode line:
+
+MODE> INS [arg:80] row:12 col:8 lines:93 size:1840 dirty
+That is extremely helpful.
+
+Then after the next command executes, clear [arg:80].
+
+Recommended MVP feature list, updated
+Given everything now, I would define MVP as:
+
+Core editing
+insert printable char
+
+Enter inserts newline
+
+Backspace deletes backward char
+
+Escape enters command mode
+
+Motion
+left/right/up/down
+
+beginning/end of line
+
+beginning/end of buffer
+
+forward/backward word
+
+Command mode
+save
+
+new-buffer
+
+quit
+
+goto-line
+
+help
+
+Display
+text line with |
+
+mode line with row/col/lines/size/dirty
+
+command line / minibuffer
+
+Prefix argument
+Ctrl-U repeat count
+
+decimal digits
+
+applies to repeatable edit and motion commands
+
+visible in mode line while pending
+
+That is now a very solid MVP.
+
+Naming implication
+This actually reinforces your sw-yocto-ed idea.
+
+A tiny editor that already has:
+
+insert/edit mode
+
+command mode
+
+repeat count
+
+movement primitives
+
+save/new/quit
+
+is still small, but it is no longer just a toy line editor. It is the beginning of a real programmable editor kernel.
+
+So sw-yocto-ed still fits nicely.
+
+Bottom line
+Yes — add repeat now.
+
+Recommended MVP semantics
+Ctrl-U begins a numeric repeat prefix
+
+digits accumulate count
+
+next repeatable action consumes it
+
+works for motion, deletion, newline, and repeated character insertion
+
+show pending count on the mode line
+
+then clear it after execution
+
+And your example should become, for consistency:
+
+Ctrl-U 80 right
+
+Ctrl-U 80 Enter
+
+Ctrl-U 80 *
+
+The last one inserts 80 asterisks at point.
+
+Next, the right design move is to define the edit-mode key state machine and the repeatable command classification table before writing code.
+
+
+would it simplify to require "insert" as a command for "Ctrl-u 80 insert foo enter" to insert foofoofoo...foo for 80 foo's?
+
+Yes, it would simplify some things, but it would also make the editor feel noticeably worse in normal editing.
+
+The real question is: what are you optimizing for in MVP?
+
+simplest implementation
+
+simplest mental model
+
+least special-case code
+
+still pleasant enough to use over UART
+
+Given those goals, I would not require insert for ordinary editing, but I would allow insert as the clean way to repeat strings.
+
+Best split for MVP
+Use two insertion paths:
+
+1. Edit-mode direct insertion
+For normal typing:
+
+printable chars insert immediately
+
+Enter inserts newline
+
+Backspace deletes backward char
+
+This keeps editing natural.
+
+2. Command-mode insert
+For structured or repeated insertion:
+
+insert foo
+
+80 insert foo
+
+or with your prefix style: Ctrl-U 80 insert foo
+
+This gives you the easy implementation path for repeated strings.
+
+That is the best compromise.
+
+Why requiring insert for everything is probably too much
+If you require:
+
+insert h
+insert e
+insert l
+insert l
+insert o
+or even:
+
+i hello
+for all text entry, then you no longer really have an editor in the usual sense. You have a command-driven text manipulator. That is simpler internally, but much less usable.
+
+Since you already want:
+
+edit mode
+
+Escape to command mode
+
+Enter in edit mode inserts newline
+
+you have already committed to a real editing mode. Once you do that, requiring insert for ordinary text becomes inconsistent.
+
+So I would keep ordinary printable character insertion direct.
+
+Where insert helps a lot
+It helps specifically for string repetition and bulk insertion.
+
+Examples:
+
+insert foo
+Ctrl-U 80 insert foo
+insert "hello world"
+Ctrl-U 20 insert "*"
+This is much easier to define than trying to invent semantics for:
+
+Ctrl-U 80 foo
+because in edit mode foo is three separate keystrokes, which would normally mean:
+
+insert f 80 times
+
+then insert o 80 times
+
+then insert o 80 times
+
+resulting in ffff....oooo....oooo..., which is not what you want.
+
+So yes: insert is the right abstraction for repeated multi-character text.
+
+Recommended semantics
+In edit mode
+printable char inserts once
+
+Ctrl-U N <printable-char> inserts that char N times
+
+Ctrl-U N Enter inserts newline N times
+
+Ctrl-U N right repeats motion N times
+
+same for backspace, etc.
+
+Examples:
+
+Ctrl-U 80 * → 80 asterisks
+
+Ctrl-U 10 Enter → 10 newlines
+
+In command mode
+insert TEXT inserts TEXT once
+
+Ctrl-U 80 insert foo inserts "foo" 80 times
+
+or simpler textual syntax:
+
+repeat 80 insert foo
+
+This is clean and easy to explain.
+
+Why this is simpler internally
+Because you can classify insertion into two kinds:
+
+A. Single-unit repeatable edit actions
+These operate on one primitive unit:
+
+one char
+
+one newline
+
+one cursor move
+
+one delete
+
+These are easy to repeat with your existing prefix count loop.
+
+B. Command-level text insertion
+insert foo is already a higher-level command taking an argument string.
+
+Then:
+
+repeat_count = 80
+
+call insert_string("foo") 80 times
+
+or more efficiently:
+
+precompute total size needed: 80 * 3
+
+fail if not enough room
+
+then append in a loop
+
+That is much simpler than trying to reinterpret raw edit-mode keystreams as grouped strings.
+
+Good MVP rule set
+I would define it like this.
+
+Edit mode repeat
+Applies to:
+
+a single printable character
+
+Enter
+
+Backspace
+
+motion keys
+
+maybe delete-forward key
+
+Examples:
+
+Ctrl-U 80 *
+
+Ctrl-U 4 right
+
+Ctrl-U 5 Backspace
+
+Command mode repeat
+Applies to repeatable commands, including:
+
+right
+
+left
+
+down
+
+up
+
+delete-word
+
+insert TEXT
+
+Examples:
+
+Ctrl-U 80 insert foo
+
+Ctrl-U 5 down
+
+Ctrl-U 3 delete-word
+
+That gives one unified repeat model with two natural insertion cases.
+
+Even simpler alternative
+If you want to simplify the design even more, you could make all multi-character insertion happen only in command mode.
+
+That is:
+
+Edit mode
+only single-character typing
+
+Command mode
+insert foo
+
+Ctrl-U 80 insert foo
+
+This is probably the sweet spot.
+
+You still get natural typing for ordinary editing, and you avoid needing any fancy “quoted string insertion keystroke mode” inside edit mode for MVP.
+
+Suggested command syntax
+I would support both of these eventually:
+
+insert foo
+insert "foo bar"
+Ctrl-U 80 insert foo
+Ctrl-U 20 insert "*"
+For true MVP, maybe start with:
+
+insert foo
+where everything after the first space is inserted literally.
+
+So:
+
+command name = insert
+
+rest of line = text to insert exactly
+
+That is extremely simple to parse.
+
+Examples:
+
+insert hello
+
+insert hello world
+
+insert indented text
+
+If preserving leading spaces matters, you can later add quoting. For MVP, literal “rest of line” is enough.
+
+Pros and cons of requiring insert for repeated strings
+Pros
+very simple semantics
+
+clean implementation
+
+no ambiguity about what gets repeated
+
+fits command-mode architecture nicely
+
+easy to expose later as a Lisp primitive
+
+Cons
+slightly more verbose
+
+requires Escape into command mode for repeated multi-char text
+
+not as fluid as richer editors later
+
+That tradeoff is worth it for MVP.
+
+Recommendation
+Do this
+keep direct edit-mode insertion for single characters
+
+keep Ctrl-U N <char> for repeated single-char insertion
+
+add command-mode insert TEXT
+
+allow Ctrl-U N insert TEXT to repeat strings
+
+Do not do this
+do not require insert for every typed character in edit mode
+
+That would simplify implementation, but it would hurt usability too much.
+
+Concrete answer
+Yes — using insert for repeated strings is a good simplification.
+
+So:
+
+Ctrl-U 80 insert foo
+should insert:
+
+foofoofoo...foo
+80 times.
+
+But ordinary typing in edit mode should still insert characters directly, without needing insert.
+
+That gives you the simplest practical MVP.
+
+
+I was suggesting insert for input line mode command usage and later scripting, for normal editing you are in edit mode and inserting as you type.  I would reach for escape Ctrl-u 80 insert "*" instead of typing * 80 times.  rare use-case, still less typing for this special case.  Otherwise what if I want to repeat a command 8 times, like move or delete.  subtle difference between inserting the word move 80 times vs running the move command 80 times.
+
+Yes — that is the right distinction, and it leads to a cleaner model.
+
+You are separating:
+
+edit mode: normal direct text entry
+
+command mode: explicit command language for structured actions, including scripting later
+
+That is a good architecture, because it avoids overloading one mechanism to do two different jobs.
+
+The key distinction
+You correctly identified two fundamentally different meanings of repetition:
+
+1. Repeat execution
+Run a command multiple times.
+
+Examples:
+
+move right 8 times
+
+delete-next-char 8 times
+
+previous-word 3 times
+
+This is:
+
+repeat 8 right
+repeat 8 delete-next-char
+or with prefix:
+
+Ctrl-U 8 right
+Ctrl-U 8 del
+2. Repeat data insertion
+Insert some text as data multiple times.
+
+Examples:
+
+insert "*" 80 times
+
+insert "foo" 80 times
+
+This is:
+
+Ctrl-U 80 insert "*"
+Ctrl-U 80 insert "foo"
+That is not “repeat the keystrokes f, o, o individually.”
+It is “run the insert command once, with a repeat count, where the payload is a string.”
+
+That is a subtle but very important distinction, and it is exactly the right way to think about it.
+
+Recommended command model
+Your command language should treat insert as a normal command with an argument.
+
+So in command mode:
+
+insert "*"
+insert "foo"
+right
+left
+delete-next-char
+delete-previous-word
+save
+quit
+Then the prefix count applies to the command invocation, not to arbitrary tokens in the input stream.
+
+So:
+
+Ctrl-U 80 insert "*"
+means:
+
+repeat count = 80
+
+command = insert
+
+argument = "*"
+
+Execute:
+
+insert("*")
+insert("*")
+...
+80 times
+Likewise:
+
+Ctrl-U 8 right
+means:
+
+repeat count = 8
+
+command = right
+
+no args
+
+Execute right() 8 times.
+
+This is a very clean model.
+
+Why this is better than trying to repeat “raw input”
+If you tried to make repetition apply directly to arbitrary command-line tokens, things become ambiguous.
+
+For example:
+
+80 move
+Does that mean:
+
+move 80 times?
+
+insert the text move 80 times?
+
+move by 80 units once?
+
+Similarly:
+
+80 insert foo
+Could mean:
+
+run insert foo 80 times
+
+insert a string consisting of 80 copies of foo
+
+insert foo once with some width parameter
+
+You avoid that ambiguity by making the grammar explicit:
+
+Prefix count modifies command execution
+and
+
+insert is just one command among others
+That is the right design.
+
+Best mental model
+I would define command mode around this conceptual grammar:
+
+[count-prefix] command [arguments...]
+Where:
+
+the optional count prefix repeats the command
+
+the command name determines semantics
+
+arguments belong to the command, not to the prefix
+
+Examples:
+
+right
+8 right
+delete-next-char
+12 delete-next-char
+insert "*"
+80 insert "*"
+insert "foo"
+3 insert "foo"
+If you want Emacs-style prefix entry in command mode, then Ctrl-U 80 simply sets the same count value before the command line is parsed/executed.
+
+So these become equivalent:
+
+Ctrl-U 80 insert "*"
+80 insert "*"
+and
+
+Ctrl-U 8 right
+8 right
+That gives you both interactive and script-friendly forms.
+
+Recommendation: support both textual count and Ctrl-U prefix
+Since you already want later scripting, I strongly recommend supporting both:
+
+Interactive prefix
+Ctrl-U 80 insert "*"
+Ctrl-U 8 right
+Script/text form
+80 insert "*"
+8 right
+Why?
+
+Because:
+
+Ctrl-U is nice in interactive use
+
+textual counts are much easier for scripts, tests, and logs
+
+both can feed the same internal mechanism
+
+Internally, both just set repeat_count.
+
+That gives you a nice future path for shell/scripting integration.
+
+Internal semantics
+The parser should produce something like:
+
+CommandInvocation {
+  repeat_count: 80,
+  command_name: "insert",
+  args: ["*"]
+}
+or
+
+CommandInvocation {
+  repeat_count: 8,
+  command_name: "right",
+  args: []
+}
+Then dispatch does one of two things:
+
+For repeatable primitive commands
+Loop execution n times:
+
+right
+
+left
+
+up
+
+down
+
+delete-next-char
+
+delete-prev-char
+
+forward-word
+
+backward-word
+
+For insert
+Repeat insertion of the given string n times.
+
+The nice part is that from the dispatcher’s point of view, these are the same idea:
+
+invoke command n times
+
+The command itself decides what one invocation means.
+
+For insert "foo", one invocation inserts one "foo".
+
+This is also better for Lisp later
+When you get to Macro Lisp, this model maps very naturally.
+
+Examples:
+
+(right)
+(insert "*")
+(insert "foo")
+Then repeat can become either:
+
+(repeat 80 (insert "*"))
+(repeat 8 (right))
+or a numeric prefix variable passed through the command dispatcher.
+
+That means your command mode design now can become your future programmable command model later. That is exactly what you want.
+
+Recommendation for MVP command syntax
+I would suggest this:
+
+In edit mode
+characters insert directly
+
+Enter inserts newline
+
+Escape enters command mode
+
+Ctrl-U sets pending count for the next edit action or for the next command after Escape
+
+In command mode
+Support either:
+
+right
+8 right
+insert "*"
+80 insert "*"
+save
+quit
+This is cleaner than forcing Ctrl-U to be the only way.
+
+Suggested concrete rules
+Rule 1: count always modifies command execution
+Not arbitrary tokens.
+
+Rule 2: insert is a command
+So repeated insert means repeated command execution.
+
+Rule 3: edit mode direct typing is separate
+Typing in edit mode is not parsed as command tokens.
+
+Rule 4: command mode should have a textual count form
+Useful for scripting and testing.
+
+Examples with the clean model
+Edit mode
+Type normally:
+
+hello world
+Repeat one char:
+
+Ctrl-U 80 *
+Repeat newline:
+
+Ctrl-U 10 Enter
+Move:
+
+Ctrl-U 8 right
+Delete:
+
+Ctrl-U 5 Backspace
+Command mode
+Insert repeated string:
+
+80 insert "*"
+80 insert "foo"
+Movement:
+
+8 right
+3 down
+12 delete-next-char
+Save:
+
+save
+This is very coherent.
+
+Subtle but important parser note
+You do not want:
+
+insert "*" 80
+because then argument parsing becomes command-specific in awkward ways.
+
+Prefer:
+
+80 insert "*"
+That keeps the prefix consistently in front.
+
+Bottom line
+Your distinction is exactly right:
+
+8 right means execute the right command 8 times
+
+80 insert "*" means execute the insert command 80 times, each time inserting "*"
+
+80 insert "move" inserts the word move 80 times
+
+80 move runs the move command 80 times, if move is a valid command
+
+That is the cleanest model for MVP, for future scripting, and for later Macro Lisp integration.
+
+Recommendation
+Adopt this unified command form:
+
+[count] command [args...]
+with Ctrl-U in interactive use simply filling in the same count.
+
+That gives you one execution model for:
+
+edit repetition
+
+command repetition
+
+scripting
+
+future Lisp command dispatch
+
+The result is smaller, more regular, and easier to grow.
+
+
+level-set.  how do I send Ctrl-u to the uart?  a host (linux, mac) terminal or a web ui might strip-off, intercept/misapply, or ignore Ctrl- characters.  What can a telnet client send (will I need to use that)?  I cannot type Ctrl-u here, it is ignored.  If I have a web UI that shows UART input and output, how do I type Ctrl-u there (just write a JavaScript key event handler?  The browser will intercept hot-keys (Mac will intercept hot keys even before browser or terminal will see them).  Are there historically used character sequences to get around this?   Like using ? as a prefix char with an alias of ??=? insert ?
+
+
+Thought for 20s
+Level-setting: Ctrl-U is not a UART feature. It is just the single control byte 0x15 (“NAK” in ASCII). Whether that byte reaches your COR24 program depends on every layer in between: OS tty line discipline, terminal emulator, telnet mode, browser UI, and platform/global shortcuts. Telnet itself is fundamentally an 8-bit byte-oriented channel, so it can carry 0x15 just fine; the problem is usually that something local intercepts it first. 
+
+What usually goes wrong
+On Unix-like hosts, terminals are often in canonical/cooked mode unless the application switches them out of it. In canonical mode, special control characters such as VKILL are interpreted by the tty layer instead of being passed through. On many systems, kill = ^U, which is exactly why Ctrl-U often erases the current input line instead of reaching the target app. termios/stty expose these special-character settings, including VKILL, VERASE, VINTR, and friends. 
+
+That is also why you “cannot type Ctrl-U here”: this chat input, like many web text inputs, is not a raw terminal and may handle control combinations locally instead of sending them as characters.
+
+What a telnet client can send
+A telnet connection can carry control bytes, including 0x15, because Telnet is defined as a bidirectional byte stream. But telnet clients may operate in either:
+
+character-at-a-time mode, where keys are sent immediately, or
+
+linemode, where the client does local line editing and only sends completed lines or edited results.
+
+Telnet linemode explicitly allows client-side editing, which is exactly the kind of thing that can swallow Ctrl-U before the remote end sees it. 
+
+So: telnet is not a magic fix. It can work, but only if you are in a mode where local editing is disabled or limited enough that 0x15 actually gets through.
+
+Historical way around this
+Yes — there is a historical pattern for avoiding fragile control-key delivery:
+
+Use an escape/prefix character in-band
+Examples from old systems and editors:
+
+ESC followed by another key
+
+a command introducer like : or ?
+
+control-byte quoting, where one prefix means “the next thing is literal” or “the next thing is a command”
+
+This is historically robust because printable ASCII tends to survive more layers than raw control chords.
+
+For your environment, this strongly suggests:
+
+Recommended MVP rule
+Use ESC to enter command mode, then use printable command text there.
+
+So instead of depending on raw Ctrl-U, support:
+
+80 right
+80 insert "*"
+5 delete-next-char
+That is much more reliable over:
+
+serial consoles
+
+telnet
+
+terminal emulators
+
+browser-based UART UIs
+
+And it maps cleanly to future scripting.
+
+Best practical recommendation
+For MVP, do not make Ctrl-U the only way to express repeat counts.
+
+Support this as the primary form:
+
+[count] command [args...]
+Examples:
+
+8 right
+80 insert "*"
+12 backspace
+10 newline
+Then, later, if you have a raw enough client path, you can add Ctrl-U as a convenience alias for interactive use.
+
+That gives you:
+
+Pros
+works in scripts
+
+works in browser UI
+
+works in line-oriented serial tools
+
+avoids OS/browser shortcut fights
+
+easier to test and log
+
+Cons
+slightly less “Emacs-like” in the transport layer
+
+For COR24 over UART, that is the right tradeoff.
+
+If you still want a prefix key in interactive mode
+Use something printable, such as:
+
+?
+
+/
+
+,
+
+;
+
+For example:
+
+?80 right
+?80 insert "*"
+or even:
+
+repeat 80 right
+repeat 80 insert "*"
+If you use ?, you do need an escaping rule for inserting literal ?. Your suggested idea is reasonable:
+
+insert "?"
+or doubled introducer:
+
+??
+But once you already have command mode behind ESC, plain textual commands are cleaner than inventing another prefix language.
+
+What to do in a browser UART UI
+Yes: in a custom web UI, you can capture keys with JavaScript. Browsers expose keyboard input through keydown/keyup, and the event tells you whether Control was held via properties like ctrlKey; default browser behavior can often be suppressed with preventDefault(). 
+
+However, there are limits:
+
+some shortcuts are handled by the page unless you cancel them
+
+some are handled by the browser before your app
+
+some are handled by the OS before the browser ever sees them
+
+So a browser UART UI can often catch Ctrl-U, but not always, and not uniformly across platforms. On macOS especially, system/global shortcuts may win before the web app gets a shot.
+
+That is another reason to prefer a printable command syntax as the canonical transport-facing interface.
+
+What to do in a native terminal app
+If you write a host-side terminal program or use a pty-based bridge, then the right answer is:
+
+put the terminal in non-canonical/raw mode
+
+disable or remap line-discipline special chars like VKILL
+
+possibly disable flow-control interception like IXON if you later care about Ctrl-S / Ctrl-Q
+
+Canonical mode and tty special characters are the main reason control bytes disappear before reaching the application. 
+
+Concrete recommendation for your editor
+I would define the transport-safe UI this way:
+
+Edit mode
+printable chars insert
+
+Enter inserts newline
+
+Escape enters command mode
+
+Command mode
+Commands are text, terminated by Enter:
+
+right
+left
+down
+up
+save
+quit
+80 right
+80 insert "*"
+Optional later aliases
+If a raw client path is available, also support:
+
+Ctrl-U 80 right
+
+Ctrl-U 80 insert "*"
+
+But treat that as syntactic sugar, not the primary interface.
+
+Bottom line
+For UART, telnet, and browser UIs, the safest design is:
+
+do not rely on raw Ctrl-U
+
+use ESC to enter command mode
+
+make textual counts the primary repeat mechanism
+
+So instead of centering the design on Ctrl-U, center it on:
+
+[count] command [args...]
+and let Ctrl-U be an optional convenience only when the client path can deliver byte 0x15 reliably.
+
+
+note: I use emacs on mac and linux, in gui mode and -nw (tui) mode.  In all cases I can type C-u and other characters.  I suppose Mac hot key configuration could mess that up, but with defaults so far it doesn't.  I could create, in Rust, the equivalent of what emacs does when connected to the COR24 UART.  Actually, it would make more sense to write elisp to use emacs as a remote editor on the COR24 UART (sort of like a subset of tramp mode)?    Let's document this and start with the simpler approach using escape C-] only, modal ascii for everything else. what about buffer regions, mark, unmark, copy, yank, paste?  too much for MVP?
+
+Yes — that is the right level-set.
+
+You have two separate concerns:
+
+1. Transport/UI reality
+Even though you personally can type C-u in Emacs on macOS and Linux, that is because Emacs is already doing the hard work:
+
+putting terminal input into the right mode when needed
+
+decoding GUI/TTY events
+
+normalizing key input
+
+handling escape-prefix conventions
+
+shielding you from many host-terminal quirks
+
+So your observation is important:
+
+the safest path is not “avoid control keys forever,” but “for MVP, define a transport-safe command language first.”
+
+That is a good design choice.
+
+And yes, later you could absolutely build either:
+
+Option A: Rust host-side terminal/UART bridge
+A small Rust app that:
+
+talks raw serial to COR24
+
+decodes richer local key input
+
+sends a cleaner byte/protocol stream
+
+maybe does local line editing or mini redisplay help
+
+Option B: Emacs front-end over UART
+An Elisp package acting like a tiny remote editor protocol, somewhat “TRAMP-like” in spirit, but really closer to:
+
+a serial transport
+
+a remote command protocol
+
+an Emacs major mode with local keybindings mapped to remote edit commands
+
+That is actually a very strong long-term idea, because then:
+
+Emacs stays the rich local UI
+
+COR24 editor/runtime stays small
+
+you can dogfood your own protocol
+
+later Macro Lisp integration can expose structured editing commands over the same channel
+
+But for now, your simpler transport-safe baseline is correct.
+
+Updated MVP interaction model
+You want to start with:
+
+Escape
+
+C-]
+
+modal ASCII for everything else
+
+That is a good constraint.
+
+I would document the MVP as:
+
+Edit mode
+printable ASCII inserts
+
+Enter inserts newline
+
+Backspace deletes backward char
+
+Escape enters command mode
+
+Command mode
+input line accepts only textual ASCII commands
+
+Enter executes command and returns to edit mode
+
+C-] cancels command mode and returns to edit mode
+
+repeat counts use textual prefix:
+
+8 right
+
+80 insert "*"
+
+That is smaller, clearer, and much easier to bootstrap than trying to solve raw control-key transport immediately.
+
+Should you document an Emacs remote-editor path now?
+Yes, but only as a future architecture note, not as MVP scope.
+
+I would document it like this:
+
+Future host integration path
+The editor protocol should be designed so that later:
+
+a Rust UART client can translate richer local input into COR24 editor commands
+
+an Emacs mode can act as a host-side remote UI, mapping Emacs commands to remote editor commands over UART
+
+That gives you a useful constraint now:
+
+do not make the command language too ad hoc
+
+Instead, define a stable command vocabulary now, even if it is small.
+
+Examples:
+
+left
+
+right
+
+up
+
+down
+
+bol
+
+eol
+
+save
+
+quit
+
+insert "foo"
+
+That will make both scripting and future Emacs integration easier.
+
+Now: regions, mark, unmark, copy, yank, paste
+My answer: yes, too much for MVP — but with one nuance.
+
+Too much for MVP proper
+A real Emacs-like region model brings in several complexities:
+
+a persistent mark position
+
+point/mark ordering rules
+
+region-active vs mark-set states
+
+commands that behave differently with/without active region
+
+copy/yank storage
+
+delete-region / kill-region semantics
+
+display indication of region
+
+later possibly multiple buffers / kill ring
+
+That is a lot of conceptual surface area for a first editor.
+
+So I would not put full regions in MVP-1.
+
+What I would do instead
+Design for them now, but postpone the user-facing feature.
+
+Internal preparation
+Reserve in editor state something like:
+
+mark = NONE or offset
+kill_buffer = optional later
+But do not expose much yet.
+
+That way you avoid painting yourself into a corner.
+
+Recommended feature staging
+MVP-1
+Focus on:
+
+single buffer
+
+point movement
+
+insertion/deletion
+
+save/new/quit
+
+textual command mode
+
+repeat counts
+
+mode line stats
+
+No mark/region yet.
+
+MVP-2
+Add:
+
+set-mark
+
+clear-mark
+
+maybe copy-region
+
+maybe delete-region
+
+maybe yank
+
+But only if you really need them.
+
+Why regions are expensive in your current UI
+Your display is only:
+
+one text/view line
+
+one mode line
+
+one input line
+
+With that UI, region visibility is weak.
+
+If point and mark are on different lines, you cannot really show the region well in a 3-line interface. So the user model becomes harder:
+
+mark is set somewhere offscreen
+
+point moves elsewhere
+
+copy/delete affects invisible text span
+
+That is usable, but less transparent in the MVP UI.
+
+So regions are not just extra commands — they also want better display support.
+
+That is another reason to postpone them.
+
+Minimal alternative to full regions
+If you want a little more editing power without full mark/region, add line-scoped operations first.
+
+Examples:
+
+delete-line
+
+copy-line
+
+yank-line
+
+duplicate-line
+
+These are much simpler because:
+
+no separate mark state
+
+no hidden region
+
+easier to debug
+
+fits a line-oriented bootstrap editor
+
+You could also add:
+
+copy-word
+
+delete-word
+
+before regions.
+
+That gives useful editing power with much lower complexity.
+
+My recommendation on copy/yank/paste
+For true MVP, I would choose one of these two paths.
+
+Option A: defer all copy/yank/paste
+Smallest and cleanest MVP.
+
+Option B: add a single simple paste buffer, but no mark/region yet
+Support only:
+
+copy-line
+
+cut-line
+
+yank
+
+This gives you a primitive clipboard/kill buffer without region complexity.
+
+That is probably the farthest I would go in MVP.
+
+I would not add:
+
+mark
+
+region
+
+copy-region
+
+kill-region
+
+exchange-point-and-mark
+
+region highlighting
+
+yet.
+
+Suggested MVP scope, revised
+Given everything you have said, I would define MVP as:
+
+Modes
+edit mode
+
+command mode
+
+Edit mode keys
+printable chars insert
+
+Enter inserts newline
+
+Backspace deletes backward char
+
+Escape enters command mode
+
+Command mode
+ASCII commands only:
+
+left, right, up, down
+
+bol, eol, bob, eob
+
+fwdw, backw
+
+del, backdel, delline
+
+newline
+
+insert TEXT
+
+save
+
+new
+
+quit
+
+goto N
+
+help
+
+Repeat
+Textual count prefix:
+
+8 right
+
+80 insert "*"
+
+10 newline
+
+Mode line
+mode
+
+row
+
+col
+
+line count
+
+buffer size
+
+dirty/clean
+
+That is already a strong MVP.
+
+MVP+1
+Then add:
+
+copy-line
+
+cut-line
+
+yank
+
+Still no regions.
+
+MVP+2
+Then add:
+
+set-mark
+
+clear-mark
+
+copy-region
+
+delete-region
+
+yank
+
+At that point you may also want:
+
+a better status line
+
+commands to show mark location
+
+perhaps a tiny “region active” indicator in mode line
+
+On naming/documentation
+Given this revised scope, I would document the current project as:
+
+sw-yocto-ed
+A minimal modal ASCII editor for COR24 with:
+
+direct insert-mode editing
+
+command-line control mode
+
+transport-safe textual command language
+
+future host-side integration path via Rust or Emacs
+
+That wording leaves room for:
+
+later Macro Lisp command bindings
+
+richer host-side terminal adapters
+
+eventual Emacs-inspired higher-level behavior
+
+without overclaiming now.
+
+Strong recommendation on the Emacs integration idea
+Do not build the Elisp front-end first.
+
+Instead:
+
+define the remote command vocabulary now
+
+implement the tiny editor locally on COR24
+
+keep the protocol textual and regular
+
+later write:
+
+Rust UART bridge, or
+
+Emacs major mode / transport adapter
+
+That sequence is much less risky.
+
+If you start with Elisp too early, you may accidentally design for Emacs convenience instead of for the real COR24 editor core.
+
+Bottom line
+Yes
+Document the future possibility of:
+
+a Rust host-side UART bridge
+
+an Emacs-based remote editor front-end
+
+For now
+Start with:
+
+Escape
+
+C-]
+
+modal ASCII commands
+
+textual repeat counts
+
+And no
+Do not add full regions/mark/copy/yank/paste to MVP-1.
+
+At most, add:
+
+copy-line
+
+cut-line
+
+yank
+
+later as a simpler intermediate step.
+
+The cleanest first milestone is still:
+
+movement
+
+insertion/deletion
+
+save/new/quit
+
+repeat counts
+
+3-line redisplay
+
+no region model yet
+
+I can turn this into a compact MVP requirements/spec document next.
+
+
+yes, create a PRD md file, an architecture.md, a design.md, and a plan.md please
+
+Below are four clean, copy-paste-ready Markdown documents tailored to your COR24 editor project (sw-yocto-ed). They are consistent with your decisions:
+
+modal (edit + command mode)
+
+UART-safe ASCII command language
+
+repeat via textual prefix (with optional future Ctrl-U)
+
+no regions in MVP
+
+future Lisp + Emacs integration considered but deferred
+
+📄 PRD.md
+# sw-yocto-ed — Product Requirements Document (PRD)
+
+## Overview
+
+sw-yocto-ed is a minimal modal text editor designed for the COR24 ISA environment. It operates over UART using a transport-safe ASCII command interface and a simple 3-line display model.
+
+The editor is intended as a bootstrap system that will evolve toward a programmable, Lisp-driven editor.
+
+---
+
+## Goals
+
+### Primary Goals
+- Provide a usable text editor over UART with minimal dependencies
+- Support basic text navigation, insertion, deletion, and saving
+- Use a transport-safe command interface (ASCII only)
+- Establish a foundation for future Macro Lisp integration
+
+### Secondary Goals
+- Enable scripting and automation via textual commands
+- Provide a clean path to host-side integrations (Rust client, Emacs mode)
+
+---
+
+## Non-Goals (MVP)
+- Full Emacs compatibility
+- Multiple buffers
+- Regions/mark system
+- Undo/redo
+- Syntax highlighting
+- Full-screen terminal control (VT100, curses)
+
+---
+
+## User Interaction Model
+
+### Modes
+
+#### Edit Mode
+- Default mode
+- Printable characters insert at point
+- Enter inserts newline
+- Backspace deletes previous character
+- Escape switches to Command Mode
+
+#### Command Mode
+- Accepts ASCII commands on input line
+- Enter executes command
+- Returns to Edit Mode after execution
+- `C-]` cancels and returns to Edit Mode
+
+---
+
+## Display Model (3-line UI)
+TEXT> current line with | indicating point
+MODE> INS row:X col:Y lines:N size:S dirty|clean
+CMD > command input or status message
+
+
+---
+
+## Core Features (MVP)
+
+### Navigation
+- left, right
+- up, down
+- beginning/end of line (bol/eol)
+- beginning/end of buffer (bob/eob)
+- forward/backward word (fwdw/backw)
+
+### Editing
+- insert (edit mode typing)
+- insert TEXT (command mode)
+- newline
+- delete-next-char (del)
+- delete-prev-char (backdel)
+- delete-line (delline)
+
+### Buffer
+- save
+- new (clear buffer)
+- quit
+
+### Utility
+- goto N (line number)
+- help
+
+---
+
+## Repeat / Count Prefix
+
+Textual prefix:
+8 right
+80 insert "*"
+10 newline
+
+
+Semantics:
+- Prefix applies to command execution count
+- Applies to motion, deletion, and insert commands
+- Default count = 1
+
+Future:
+- optional Ctrl-U prefix for interactive use
+
+---
+
+## Data Model
+
+- Single buffer
+- Gap buffer representation
+- Fixed memory regions
+- Dirty flag
+- Cursor (point)
+
+---
+
+## Success Criteria
+
+- User can edit, navigate, and save text via UART
+- Commands are consistent and predictable
+- System runs within COR24 constraints
+- Codebase supports future extension (Lisp, host UI)
+
+---
+
+## Future Directions
+
+- Macro Lisp command binding
+- Host-side Rust terminal bridge
+- Emacs remote editing mode
+- Regions and kill/yank
+- Multiple buffers
+🏗️ architecture.md
+# sw-yocto-ed — Architecture
+
+## Overview
+
+The editor is structured as a small, layered system designed for simplicity, extensibility, and low resource usage.
+
+---
+
+## High-Level Components
++----------------------+
+| UART Interface |
++----------+-----------+
+|
++----------v-----------+
+| Input State Machine|
+| (Edit / Command) |
++----------+-----------+
+|
++----------v-----------+
+| Command Dispatcher |
++----------+-----------+
+|
++----------v-----------+
+| Editor Core |
+| (Buffer + Cursor) |
++----------+-----------+
+|
++----------v-----------+
+| Renderer |
++----------------------+
+
+
+---
+
+## Components
+
+### 1. UART Interface
+- Reads input characters
+- Writes output lines
+- No terminal control assumptions
+
+---
+
+### 2. Input State Machine
+
+States:
+- EDIT
+- COMMAND
+
+Responsibilities:
+- Route input to appropriate handler
+- Manage transitions (Escape, Enter, C-])
+
+---
+
+### 3. Command Dispatcher
+
+Input:
+[count] command [args...]
+
+
+Output:
+- Executes command N times
+- Returns status/result
+
+---
+
+### 4. Editor Core
+
+Maintains:
+- Buffer (gap buffer)
+- Cursor (point)
+- Dirty flag
+
+Provides primitives:
+- insert_char
+- insert_string
+- delete_forward
+- delete_backward
+- move_left/right/up/down
+- line/word scanning
+
+---
+
+### 5. Renderer
+
+Repaints all 3 lines after each command:
+- TEXT line
+- MODE line
+- CMD line
+
+No partial redraw optimization in MVP
+
+---
+
+## Data Structures
+
+### Buffer
+[ text_before ][ GAP ][ text_after ]
+^
+point
+
+
+Fields:
+- base pointer
+- capacity
+- gap_start
+- gap_end
+- dirty flag
+
+---
+
+## Command Execution Flow
+Input → Parse → CommandInvocation
+→ Apply repeat count
+→ Execute command(s)
+→ Update state
+→ Render
+
+
+---
+
+## Error Handling
+
+- Commands return status codes
+- Renderer displays error messages in CMD line
+- Partial operations allowed for movement
+- Insert operations may pre-check capacity
+
+---
+
+## Extensibility
+
+Future layers:
+- Lisp command bindings
+- Host-side protocol adapters
+- richer UI
+
+Architecture intentionally keeps:
+- core editing primitives native
+- higher-level behavior pluggable
+🧩 design.md
+# sw-yocto-ed — Detailed Design
+
+## Input Handling
+
+### Edit Mode
+
+| Input        | Action                  |
+|-------------|--------------------------|
+| printable   | insert char              |
+| Enter       | insert newline           |
+| Backspace   | delete previous char     |
+| Escape      | switch to command mode   |
+
+---
+
+### Command Mode
+
+| Input        | Action                      |
+|-------------|-----------------------------|
+| text        | build command string        |
+| Backspace   | edit command                |
+| Enter       | execute command             |
+| C-]         | cancel, return to edit mode |
+
+---
+
+## Command Grammar
+[count] command [arguments...]
+
+
+Examples:
+right
+8 right
+insert foo
+80 insert "*"
+goto 42
+
+
+---
+
+## Command Table
+
+| Command   | Description |
+|----------|------------|
+| left/right/up/down | movement |
+| bol/eol | line boundaries |
+| bob/eob | buffer boundaries |
+| fwdw/backw | word movement |
+| del/backdel | char delete |
+| delline | delete line |
+| newline | insert newline |
+| insert TEXT | insert string |
+| save | save buffer |
+| new | clear buffer |
+| quit | exit |
+| goto N | jump to line |
+| help | show help |
+
+---
+
+## Repeat Semantics
+
+- Default count = 1
+- Prefix modifies command execution count
+- Applies to repeatable commands only
+
+Execution model:
+for i in 1..count:
+command()
+
+
+---
+
+## Buffer Operations
+
+### Insert Char
+- move gap if needed
+- place char at gap_start
+- increment gap_start
+
+### Delete Forward
+- expand gap_end
+
+### Delete Backward
+- decrement gap_start
+
+### Move Cursor
+- shift gap left/right
+
+---
+
+## Line Handling
+
+- Lines separated by '\n'
+- BOL/EOL found via scan
+- Row/column computed on demand
+
+---
+
+## Mode Line Fields
+MODE> [INS|CMD] row:X col:Y lines:N size:S dirty|clean
+
+
+---
+
+## Rendering
+
+Always redraw:
+
+1. TEXT line
+   - current line only
+   - insert `|` at point
+
+2. MODE line
+
+3. CMD line
+
+---
+
+## Memory Layout (conceptual)
+0x000000 Editor code
+0x010000 Source buffer
+0x020000 Heap (gap buffer)
+0x040000 Stack
+
+
+---
+
+## Future Hooks
+
+- mark position (reserved, unused in MVP)
+- kill buffer
+- command registry for Lisp
+🗺️ plan.md
+# sw-yocto-ed — Implementation Plan
+
+## Phase 0 — Setup
+
+- UART input/output working
+- basic build + run on COR24 emulator/hardware
+
+---
+
+## Phase 1 — Core Infrastructure
+
+### 1. Buffer
+- implement gap buffer
+- load initial text from fixed address
+- support insert/delete/move
+
+### 2. Renderer
+- print TEXT line with `|`
+- print MODE line
+- print CMD line
+
+---
+
+## Phase 2 — Input State Machine
+
+- implement EDIT mode
+- implement COMMAND mode
+- Escape / Enter / C-] transitions
+
+---
+
+## Phase 3 — Command Parser
+
+- parse:
+  - optional count
+  - command
+  - arguments (rest-of-line)
+
+- build CommandInvocation struct
+
+---
+
+## Phase 4 — Command Execution
+
+Implement:
+
+### Movement
+- left/right/up/down
+- bol/eol
+- bob/eob
+
+### Editing
+- del/backdel
+- newline
+- insert TEXT
+
+### Buffer
+- save
+- new
+- quit
+
+### Utility
+- goto
+- help
+
+---
+
+## Phase 5 — Repeat Support
+
+- add count prefix support
+- integrate into dispatcher
+- apply to repeatable commands
+
+---
+
+## Phase 6 — Polish
+
+- error messages
+- boundary handling
+- mode line accuracy
+- buffer stats
+
+---
+
+## Phase 7 — Testing
+
+- manual UART testing
+- edge cases:
+  - buffer full
+  - empty buffer
+  - large counts
+  - movement boundaries
+
+---
+
+## Phase 8 — MVP Complete
+
+Deliver:
+- stable editor
+- documented command set
+- reproducible build
+
+---
+
+## Future Phases
+
+### Phase 9
+- copy-line / cut-line / yank
+
+### Phase 10
+- mark + region
+
+### Phase 11
+- Macro Lisp integration
+
+### Phase 12
+- Rust UART bridge
+
+### Phase 13
+- Emacs remote mode
+
+---
+
+## Milestone Definition
+
+MVP complete when:
+- editing + navigation + save works reliably
+- commands are consistent
+- repeat works
+- UI stable over UART
+If you want next, I can:
+
+generate a minimal C project skeleton matching this structure
+
+or a Rust host-side UART test harness
+
+or an Elisp prototype for remote control mode
+
+
+document the Rust and Elisp ideas for later, and generate the C project skeleton.
+
+
+Thought for 2m 53s
+Done.
+
+I created:
+
+a documented future-integration note for the Rust UART bridge and Emacs/Elisp remote mode
+
+a host-buildable C project skeleton for sw-yocto-ed
+
+a zip bundle with docs, headers, sources, Makefile, and a compiled host demo binary
+
+Files:
+
+sw-yocto-ed project zip
+
+Compiled demo binary
+
+What’s inside the project:
+
+docs/PRD.md
+
+docs/architecture.md
+
+docs/design.md
+
+docs/plan.md
+
+docs/future-integrations.md
+
+include/*.h
+
+src/*.c
+
+Makefile
+
+README.md
+
+A few notes about the skeleton:
+
+It uses stdio as a stand-in for UART for now.
+
+It includes:
+
+edit mode vs command mode
+
+a simple gap buffer
+
+3-line rendering
+
+textual repeat-count parsing
+
+stub command execution for:
+
+left
+
+right
+
+del
+
+backdel
+
+newline
+
+insert
+
+save
+
+new
+
+quit
+
+help
+
+It does not yet implement:
+
+up / down
+
+bol / eol / bob / eob
+
+word motion
+
+goto
+
+real save-back to your fixed original buffer region
+
+COR24-specific UART and memory-map integration
+
+The next best step is probably to replace the stdio platform layer with a COR24-oriented UART layer and wire in the fixed-address source/save regions.
+
+
+
+
