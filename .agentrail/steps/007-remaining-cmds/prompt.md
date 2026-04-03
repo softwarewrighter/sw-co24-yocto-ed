@@ -1,0 +1,1 @@
+Add missing commands from design doc (up, down, bol, eol, bob, eob, fwdw, backw, delline, goto). Create comprehensive integration reg-rs test that exercises full editor workflow: open, edit, navigate, insert, save, quit.

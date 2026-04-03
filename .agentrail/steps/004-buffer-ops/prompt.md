@@ -1,0 +1,1 @@
+Verify gap buffer operations work correctly on COR24: insert, delete, move cursor. Test via UART command sequences. Add reg-rs tests for buffer edge cases.

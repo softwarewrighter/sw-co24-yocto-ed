@@ -1,0 +1,1 @@
+Verify command parsing and execution via UART: left, right, del, backdel, newline, insert, save, new, quit, help. Test repeat counts. Add reg-rs tests.

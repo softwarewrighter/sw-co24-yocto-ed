@@ -1,0 +1,1 @@
+Adapt platform_stdio.c to use COR24 UART MMIO (0xFF0100/0xFF0101) via direct register access like tinyc demos. Use putchar/getchar pattern from tc24r stdio.h. The platform layer provides sye_platform_read_char() and sye_platform_write_string().

@@ -1,0 +1,7 @@
+number = 2
+slug = "platform-uart"
+status = "in-progress"
+description = "Adapt platform_stdio.c to use COR24 UART MMIO (0xFF0100/0xFF0101) via direct ..."
+role = "production"
+context_files = []
+created_at = "2026-04-03T15:07:47"

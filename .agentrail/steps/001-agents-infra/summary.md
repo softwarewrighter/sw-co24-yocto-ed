@@ -1,0 +1,1 @@
+Created AGENTS.md with agentrail protocol adapted for C projects (tc24r build + reg-rs tests), justfile with build/run/test targets, .gitignore, removed gcc Makefile and binary, created GitHub repo and pushed.

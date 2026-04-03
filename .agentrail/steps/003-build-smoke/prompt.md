@@ -1,0 +1,1 @@
+Get the existing skeleton code compiling with tc24r and running on cor24-run. Verify initial render output via UART. Create first reg-rs test (yocto_ed prefix). Fix any tc24r compatibility issues (C subset limitations, 24-bit types, etc.).

@@ -1,0 +1,1 @@
+Verify character insert, newline, backspace work via UART input. Test edit mode transitions to command mode via ESC. Add reg-rs tests.

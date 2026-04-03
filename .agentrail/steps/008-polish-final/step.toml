@@ -1,0 +1,7 @@
+number = 8
+slug = "polish-final"
+status = "pending"
+description = "Run full reg-rs test suite. Verify all commands work end-to-end on emulator. ..."
+role = "production"
+context_files = []
+created_at = "2026-04-03T15:08:01"

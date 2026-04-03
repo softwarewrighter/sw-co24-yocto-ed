@@ -1,0 +1,1 @@
+Run full reg-rs test suite. Verify all commands work end-to-end on emulator. Clean up code. Final commit with AGENTS.md complete.

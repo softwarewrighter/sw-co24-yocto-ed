@@ -1,0 +1,1 @@
+Create AGENTS.md with agentrail protocol adapted for C projects (tc24r build + reg-rs tests, no cargo/rustfmt). Create justfile for build/run/test. Remove gcc Makefile. Create .gitignore for build artifacts.

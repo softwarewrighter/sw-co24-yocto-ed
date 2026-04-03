@@ -1,0 +1,7 @@
+number = 6
+slug = "command-mode"
+status = "pending"
+description = "Verify command parsing and execution via UART: left, right, del, backdel, new..."
+role = "production"
+context_files = []
+created_at = "2026-04-03T15:07:56"
