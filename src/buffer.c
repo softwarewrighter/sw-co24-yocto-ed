@@ -27,9 +27,9 @@ int sye_buffer_load_cstr(struct sye_buffer *buffer, const char *text) {
     if (len > buffer->capacity) {
         return 0;
     }
-    sye_memcpy(buffer->base, text, len);
-    buffer->gap_start = len;
-    buffer->gap_end = buffer->capacity;
+    sye_memcpy(buffer->base + (buffer->capacity - len), text, len);
+    buffer->gap_start = 0;
+    buffer->gap_end = buffer->capacity - len;
     buffer->dirty = 0;
     return 1;
 }

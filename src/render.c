@@ -96,9 +96,9 @@ void sye_render_mode_line(const struct sye_editor *editor, char *out, int out_ca
 
     pos = sye_copy_str(out, "MODE> ");
     if (editor->mode == SYE_MODE_EDIT) {
-        pos += sye_copy_str(out + pos, "INS");
+        pos += sye_copy_str(out + pos, "[edit]");
     } else {
-        pos += sye_copy_str(out + pos, "CMD");
+        pos += sye_copy_str(out + pos, "[command]");
     }
 
     pos += sye_copy_str(out + pos, " row:");

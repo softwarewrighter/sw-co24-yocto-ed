@@ -1,0 +1,5 @@
+command = '''cor24-run --run build/swye.s --load-binary tests/testfile.txt@0x10000 -u $'\x1bquit\n' --speed 0 -n 5000000 2>&1'''
+timeout = 30
+preprocess = "grep -A 100 '^UART output:' || true"
+exit_code = 0
+desc = "Smoke: loads testfile, renders 3 lines with [edit] mode, quits"

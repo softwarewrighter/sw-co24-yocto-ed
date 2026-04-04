@@ -74,6 +74,7 @@ void sye_editor_handle_command_key(struct sye_editor *editor, int ch) {
     }
 
     switch (ch) {
+        case SYE_CH_ESC:
         case SYE_CH_C_RIGHT_BRACKET:
             editor->mode = SYE_MODE_EDIT;
             sye_set_status(editor, "edit mode");
@@ -98,7 +99,6 @@ void sye_editor_handle_command_key(struct sye_editor *editor, int ch) {
 
     if (!sye_command_parse(editor->command_buffer, &invocation)) {
         sye_set_status(editor, "parse error");
-        editor->mode = SYE_MODE_EDIT;
         editor->command_length = 0;
         editor->command_buffer[0] = '\0';
         return;
@@ -109,7 +109,6 @@ void sye_editor_handle_command_key(struct sye_editor *editor, int ch) {
         editor->quit_requested = 1;
     }
 
-    editor->mode = SYE_MODE_EDIT;
     editor->command_length = 0;
     editor->command_buffer[0] = '\0';
 }

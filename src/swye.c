@@ -50,15 +50,13 @@ static void sye_set_status_buf(char *buf, int cap, const char *msg) {
 #include "render.c"
 
 #define SYE_WORK_BUF_CAP 4096
+#define SYE_FILE_ADDR    0x10000
 
 static char g_work_buffer[SYE_WORK_BUF_CAP];
-static const char g_initial_text[] =
-    "Welcome to sw-yocto-ed\n"
-    "This is a bootstrap skeleton.\n";
 
 int main(void) {
     struct sye_editor editor;
-    sye_editor_init(&editor, g_work_buffer, SYE_WORK_BUF_CAP, g_initial_text);
+    sye_editor_init(&editor, g_work_buffer, SYE_WORK_BUF_CAP, (const char *)SYE_FILE_ADDR);
     sye_editor_render(&editor);
 
     while (!editor.quit_requested) {

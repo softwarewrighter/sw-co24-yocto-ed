@@ -1,0 +1,5 @@
+command = '''printf '\x1b8 right\n' | cor24-run --run build/swye.s --load-binary tests/testfile.txt@0x10000 --speed 0 -n 100000000 2>&1'''
+timeout = 30
+preprocess = "grep -A 100 '^UART output:' || true"
+exit_code = 0
+desc = "Command mode test"
