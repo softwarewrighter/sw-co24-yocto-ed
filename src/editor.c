@@ -1,11 +1,3 @@
-#include <stdio.h>
-#include <string.h>
-#include "editor.h"
-#include "buffer.h"
-#include "command.h"
-#include "platform.h"
-#include "render.h"
-
 #define SYE_CH_ESC 27
 #define SYE_CH_C_RIGHT_BRACKET 29
 #define SYE_CH_BACKSPACE_1 8
@@ -13,36 +5,37 @@
 #define SYE_CH_ENTER_1 '\n'
 #define SYE_CH_ENTER_2 '\r'
 
-static void sye_set_status(sye_editor_t *editor, const char *message) {
+static void sye_set_status(struct sye_editor *editor, const char *message) {
+    int i;
     if (!editor || !message) {
         return;
     }
-
-    (void)snprintf(editor->status_buffer, sizeof(editor->status_buffer), "%s", message);
+    for (i = 0; i < SYE_STATUS_BUF_CAP - 1 && message[i] != '\0'; i++) {
+        editor->status_buffer[i] = message[i];
+    }
+    editor->status_buffer[i] = '\0';
 }
 
 void sye_editor_init(
-    sye_editor_t *editor,
+    struct sye_editor *editor,
     char *work_buffer,
-    size_t work_capacity,
+    int work_capacity,
     const char *initial_text
 ) {
     if (!editor) {
         return;
     }
-
-    memset(editor, 0, sizeof(*editor));
+    sye_memset((char *)editor, 0, sizeof(struct sye_editor));
     editor->mode = SYE_MODE_EDIT;
     sye_buffer_init(&editor->buffer, work_buffer, work_capacity);
-    (void)sye_buffer_load_cstr(&editor->buffer, initial_text ? initial_text : "");
+    sye_buffer_load_cstr(&editor->buffer, initial_text ? initial_text : "");
     sye_set_status(editor, "ready");
 }
 
-void sye_editor_handle_edit_key(sye_editor_t *editor, int ch) {
+void sye_editor_handle_edit_key(struct sye_editor *editor, int ch) {
     if (!editor) {
         return;
     }
-
     switch (ch) {
         case SYE_CH_ESC:
             editor->mode = SYE_MODE_COMMAND;
@@ -72,9 +65,9 @@ void sye_editor_handle_edit_key(sye_editor_t *editor, int ch) {
     }
 }
 
-void sye_editor_handle_command_key(sye_editor_t *editor, int ch) {
-    sye_command_invocation_t invocation;
-    sye_status_t status;
+void sye_editor_handle_command_key(struct sye_editor *editor, int ch) {
+    struct sye_cmd_invocation invocation;
+    int status;
 
     if (!editor) {
         return;
@@ -87,8 +80,8 @@ void sye_editor_handle_command_key(sye_editor_t *editor, int ch) {
             return;
         case SYE_CH_BACKSPACE_1:
         case SYE_CH_BACKSPACE_2:
-            if (editor->command_length > 0U) {
-                editor->command_length -= 1U;
+            if (editor->command_length > 0) {
+                editor->command_length -= 1;
                 editor->command_buffer[editor->command_length] = '\0';
             }
             return;
@@ -96,7 +89,7 @@ void sye_editor_handle_command_key(sye_editor_t *editor, int ch) {
         case SYE_CH_ENTER_2:
             break;
         default:
-            if (ch >= 32 && ch <= 126 && editor->command_length + 1U < sizeof(editor->command_buffer)) {
+            if (ch >= 32 && ch <= 126 && editor->command_length + 1 < SYE_CMD_BUF_CAP) {
                 editor->command_buffer[editor->command_length++] = (char)ch;
                 editor->command_buffer[editor->command_length] = '\0';
             }
@@ -113,7 +106,7 @@ void sye_editor_handle_command_key(sye_editor_t *editor, int ch) {
 
     status = sye_command_execute(editor, &invocation);
     if (status == SYE_STATUS_QUIT) {
-        editor->quit_requested = true;
+        editor->quit_requested = 1;
     }
 
     editor->mode = SYE_MODE_EDIT;
@@ -121,7 +114,7 @@ void sye_editor_handle_command_key(sye_editor_t *editor, int ch) {
     editor->command_buffer[0] = '\0';
 }
 
-void sye_editor_render(const sye_editor_t *editor) {
+void sye_editor_render(const struct sye_editor *editor) {
     char text_line[256];
     char mode_line[256];
     char command_line[256];
@@ -130,15 +123,15 @@ void sye_editor_render(const sye_editor_t *editor) {
         return;
     }
 
-    sye_render_text_line(editor, text_line, sizeof(text_line));
-    sye_render_mode_line(editor, mode_line, sizeof(mode_line));
-    sye_render_command_line(editor, command_line, sizeof(command_line));
+    sye_render_text_line(editor, text_line, 256);
+    sye_render_mode_line(editor, mode_line, 256);
+    sye_render_command_line(editor, command_line, 256);
 
-    sye_platform_write_string("\n");
-    sye_platform_write_string(text_line);
-    sye_platform_write_string("\n");
-    sye_platform_write_string(mode_line);
-    sye_platform_write_string("\n");
-    sye_platform_write_string(command_line);
-    sye_platform_write_string("\n");
+    uart_puts("\n");
+    uart_puts(text_line);
+    uart_puts("\n");
+    uart_puts(mode_line);
+    uart_puts("\n");
+    uart_puts(command_line);
+    uart_puts("\n");
 }

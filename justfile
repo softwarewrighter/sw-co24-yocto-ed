@@ -7,7 +7,7 @@ cor24_run := "cor24-run"
 
 build:
     mkdir -p build
-    {{tc24r}} src/main.c src/editor.c src/buffer.c src/command.c src/render.c src/platform_uart.c -Iinclude -o build/swye.s
+    {{tc24r}} src/swye.c -o build/swye.s
 
 run: build
     {{cor24_run}} --run build/swye.s --terminal --echo --speed 0

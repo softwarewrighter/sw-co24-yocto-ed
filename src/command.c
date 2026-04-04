@@ -1,46 +1,39 @@
-#include <ctype.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include "buffer.h"
-#include "command.h"
-
 static const char *sye_skip_spaces(const char *p) {
-    while (p && *p != '\0' && isspace((unsigned char)*p)) {
-        ++p;
+    while (p && *p != '\0' && sye_isspace(*p)) {
+        p++;
     }
     return p;
 }
 
-bool sye_command_parse(char *input, sye_command_invocation_t *invocation) {
+int sye_command_parse(char *input, struct sye_cmd_invocation *invocation) {
     char *p;
     char *name_start;
 
     if (!input || !invocation) {
-        return false;
+        return 0;
     }
 
-    invocation->repeat_count = 1U;
+    invocation->repeat_count = 1;
     invocation->name = "";
     invocation->args = "";
 
     p = input;
-    p = (char *)sye_skip_spaces(p);
+    p = sye_skip_spaces(p);
     if (*p == '\0') {
-        return false;
+        return 0;
     }
 
-    if (isdigit((unsigned char)*p)) {
-        invocation->repeat_count = (size_t)strtoul(p, &p, 10);
-        if (invocation->repeat_count == 0U) {
-            invocation->repeat_count = 1U;
+    if (sye_isdigit(*p)) {
+        invocation->repeat_count = sye_strtoul(p, &p);
+        if (invocation->repeat_count == 0) {
+            invocation->repeat_count = 1;
         }
-        p = (char *)sye_skip_spaces(p);
+        p = sye_skip_spaces(p);
     }
 
-    name_start = p;
-    while (*p != '\0' && !isspace((unsigned char)*p)) {
-        ++p;
+    name_start = (char *)p;
+    while (*p != '\0' && !sye_isspace(*p)) {
+        p++;
     }
 
     if (*p != '\0') {
@@ -48,70 +41,64 @@ bool sye_command_parse(char *input, sye_command_invocation_t *invocation) {
     }
 
     invocation->name = name_start;
-    p = (char *)sye_skip_spaces(p);
+    p = sye_skip_spaces(p);
     invocation->args = p;
-    return true;
+    return 1;
 }
 
-static sye_status_t sye_execute_once(sye_editor_t *editor, const sye_command_invocation_t *invocation) {
-    if (strcmp(invocation->name, "left") == 0) {
+static int sye_execute_once(struct sye_editor *editor, const struct sye_cmd_invocation *invocation) {
+    if (sye_strcmp(invocation->name, "left") == 0) {
         return sye_buffer_move_left(&editor->buffer) ? SYE_STATUS_OK : SYE_STATUS_BOUNDARY;
     }
-    if (strcmp(invocation->name, "right") == 0) {
+    if (sye_strcmp(invocation->name, "right") == 0) {
         return sye_buffer_move_right(&editor->buffer) ? SYE_STATUS_OK : SYE_STATUS_BOUNDARY;
     }
-    if (strcmp(invocation->name, "backdel") == 0) {
+    if (sye_strcmp(invocation->name, "backdel") == 0) {
         return sye_buffer_delete_backward_char(&editor->buffer) ? SYE_STATUS_OK : SYE_STATUS_BOUNDARY;
     }
-    if (strcmp(invocation->name, "del") == 0) {
+    if (sye_strcmp(invocation->name, "del") == 0) {
         return sye_buffer_delete_forward_char(&editor->buffer) ? SYE_STATUS_OK : SYE_STATUS_BOUNDARY;
     }
-    if (strcmp(invocation->name, "newline") == 0) {
+    if (sye_strcmp(invocation->name, "newline") == 0) {
         return sye_buffer_insert_char(&editor->buffer, '\n') ? SYE_STATUS_OK : SYE_STATUS_NO_SPACE;
     }
-    if (strcmp(invocation->name, "insert") == 0) {
+    if (sye_strcmp(invocation->name, "insert") == 0) {
         return sye_buffer_insert_cstr(&editor->buffer, invocation->args) ? SYE_STATUS_OK : SYE_STATUS_NO_SPACE;
     }
-    if (strcmp(invocation->name, "save") == 0) {
-        editor->buffer.dirty = false;
-        (void)snprintf(editor->status_buffer, sizeof(editor->status_buffer), "saved (stub)");
+    if (sye_strcmp(invocation->name, "save") == 0) {
+        editor->buffer.dirty = 0;
+        sye_set_status_buf(editor->status_buffer, SYE_STATUS_BUF_CAP, "saved (stub)");
         return SYE_STATUS_OK;
     }
-    if (strcmp(invocation->name, "new") == 0) {
+    if (sye_strcmp(invocation->name, "new") == 0) {
         sye_buffer_init(&editor->buffer, editor->buffer.base, editor->buffer.capacity);
-        (void)snprintf(editor->status_buffer, sizeof(editor->status_buffer), "new buffer");
+        sye_set_status_buf(editor->status_buffer, SYE_STATUS_BUF_CAP, "new buffer");
         return SYE_STATUS_OK;
     }
-    if (strcmp(invocation->name, "quit") == 0) {
-        (void)snprintf(editor->status_buffer, sizeof(editor->status_buffer), "quit requested");
+    if (sye_strcmp(invocation->name, "quit") == 0) {
         return SYE_STATUS_QUIT;
     }
-    if (strcmp(invocation->name, "help") == 0) {
-        (void)snprintf(editor->status_buffer, sizeof(editor->status_buffer), "help: left right del backdel newline insert save new quit");
+    if (sye_strcmp(invocation->name, "help") == 0) {
+        sye_set_status_buf(editor->status_buffer, SYE_STATUS_BUF_CAP, "help: left right del backdel newline insert save new quit");
         return SYE_STATUS_OK;
     }
 
-    (void)snprintf(editor->status_buffer, sizeof(editor->status_buffer), "unknown: %s", invocation->name);
     return SYE_STATUS_UNKNOWN_COMMAND;
 }
 
-sye_status_t sye_command_execute(sye_editor_t *editor, const sye_command_invocation_t *invocation) {
-    size_t i;
-    sye_status_t status = SYE_STATUS_OK;
+int sye_command_execute(struct sye_editor *editor, const struct sye_cmd_invocation *invocation) {
+    int i;
+    int status = SYE_STATUS_OK;
 
     if (!editor || !invocation) {
         return SYE_STATUS_ERR;
     }
 
-    for (i = 0U; i < invocation->repeat_count; ++i) {
+    for (i = 0; i < invocation->repeat_count; i++) {
         status = sye_execute_once(editor, invocation);
         if (status != SYE_STATUS_OK) {
             break;
         }
-    }
-
-    if (status == SYE_STATUS_OK && strcmp(invocation->name, "insert") != 0 && strcmp(invocation->name, "help") != 0 && strcmp(invocation->name, "save") != 0 && strcmp(invocation->name, "new") != 0) {
-        (void)snprintf(editor->status_buffer, sizeof(editor->status_buffer), "ok");
     }
 
     return status;

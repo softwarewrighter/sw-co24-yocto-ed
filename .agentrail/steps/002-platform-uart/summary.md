@@ -1,0 +1,1 @@
+Replaced platform_stdio.c with platform_uart.c using COR24 UART MMIO (0xFF0100/0xFF0101). Direct register access for TX/RX with busy/ready polling. Removed gcc stdio dependency.

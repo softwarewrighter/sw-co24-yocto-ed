@@ -1,201 +1,178 @@
-#include <ctype.h>
-#include <string.h>
-#include "buffer.h"
-
-static char sye_buffer_char_at(const sye_buffer_t *buffer, size_t logical_index) {
-    size_t gap_size;
+static char sye_buffer_char_at(const struct sye_buffer *buffer, int logical_index) {
+    int gap_size;
     if (logical_index < buffer->gap_start) {
         return buffer->base[logical_index];
     }
-
     gap_size = buffer->gap_end - buffer->gap_start;
     return buffer->base[logical_index + gap_size];
 }
 
-void sye_buffer_init(sye_buffer_t *buffer, char *storage, size_t capacity) {
+void sye_buffer_init(struct sye_buffer *buffer, char *storage, int capacity) {
     if (!buffer) {
         return;
     }
-
     buffer->base = storage;
     buffer->capacity = capacity;
-    buffer->gap_start = 0U;
+    buffer->gap_start = 0;
     buffer->gap_end = capacity;
-    buffer->dirty = false;
+    buffer->dirty = 0;
 }
 
-bool sye_buffer_load_cstr(sye_buffer_t *buffer, const char *text) {
-    size_t len;
+int sye_buffer_load_cstr(struct sye_buffer *buffer, const char *text) {
+    int len;
     if (!buffer || !text) {
-        return false;
+        return 0;
     }
-
-    len = strlen(text);
+    len = sye_strlen(text);
     if (len > buffer->capacity) {
-        return false;
+        return 0;
     }
-
-    memcpy(buffer->base, text, len);
+    sye_memcpy(buffer->base, text, len);
     buffer->gap_start = len;
     buffer->gap_end = buffer->capacity;
-    buffer->dirty = false;
-    return true;
+    buffer->dirty = 0;
+    return 1;
 }
 
-size_t sye_buffer_size(const sye_buffer_t *buffer) {
+int sye_buffer_size(const struct sye_buffer *buffer) {
     return buffer->capacity - (buffer->gap_end - buffer->gap_start);
 }
 
-size_t sye_buffer_point(const sye_buffer_t *buffer) {
+int sye_buffer_point(const struct sye_buffer *buffer) {
     return buffer->gap_start;
 }
 
-size_t sye_buffer_gap_size(const sye_buffer_t *buffer) {
+int sye_buffer_gap_size(const struct sye_buffer *buffer) {
     return buffer->gap_end - buffer->gap_start;
 }
 
-bool sye_buffer_insert_char(sye_buffer_t *buffer, char ch) {
-    if (!buffer || sye_buffer_gap_size(buffer) == 0U) {
-        return false;
+int sye_buffer_insert_char(struct sye_buffer *buffer, char ch) {
+    if (!buffer || sye_buffer_gap_size(buffer) == 0) {
+        return 0;
     }
-
-    buffer->base[buffer->gap_start++] = ch;
-    buffer->dirty = true;
-    return true;
+    buffer->base[buffer->gap_start] = ch;
+    buffer->gap_start = buffer->gap_start + 1;
+    buffer->dirty = 1;
+    return 1;
 }
 
-bool sye_buffer_insert_cstr(sye_buffer_t *buffer, const char *text) {
-    size_t i;
+int sye_buffer_insert_cstr(struct sye_buffer *buffer, const char *text) {
+    int i;
     if (!buffer || !text) {
-        return false;
+        return 0;
     }
-
-    for (i = 0U; text[i] != '\0'; ++i) {
+    for (i = 0; text[i] != '\0'; i = i + 1) {
         if (!sye_buffer_insert_char(buffer, text[i])) {
-            return false;
+            return 0;
         }
     }
-
-    return true;
+    return 1;
 }
 
-bool sye_buffer_delete_backward_char(sye_buffer_t *buffer) {
-    if (!buffer || buffer->gap_start == 0U) {
-        return false;
+int sye_buffer_delete_backward_char(struct sye_buffer *buffer) {
+    if (!buffer || buffer->gap_start == 0) {
+        return 0;
     }
-
-    buffer->gap_start -= 1U;
-    buffer->dirty = true;
-    return true;
+    buffer->gap_start = buffer->gap_start - 1;
+    buffer->dirty = 1;
+    return 1;
 }
 
-bool sye_buffer_delete_forward_char(sye_buffer_t *buffer) {
+int sye_buffer_delete_forward_char(struct sye_buffer *buffer) {
     if (!buffer || buffer->gap_end >= buffer->capacity) {
-        return false;
+        return 0;
     }
-
-    buffer->gap_end += 1U;
-    buffer->dirty = true;
-    return true;
+    buffer->gap_end = buffer->gap_end + 1;
+    buffer->dirty = 1;
+    return 1;
 }
 
-bool sye_buffer_move_left(sye_buffer_t *buffer) {
-    if (!buffer || buffer->gap_start == 0U) {
-        return false;
+int sye_buffer_move_left(struct sye_buffer *buffer) {
+    if (!buffer || buffer->gap_start == 0) {
+        return 0;
     }
-
-    buffer->base[--buffer->gap_end] = buffer->base[--buffer->gap_start];
-    return true;
+    buffer->gap_start = buffer->gap_start - 1;
+    buffer->gap_end = buffer->gap_end - 1;
+    buffer->base[buffer->gap_end] = buffer->base[buffer->gap_start];
+    return 1;
 }
 
-bool sye_buffer_move_right(sye_buffer_t *buffer) {
+int sye_buffer_move_right(struct sye_buffer *buffer) {
     if (!buffer || buffer->gap_end >= buffer->capacity) {
-        return false;
+        return 0;
     }
-
-    buffer->base[buffer->gap_start++] = buffer->base[buffer->gap_end++];
-    return true;
+    buffer->base[buffer->gap_start] = buffer->base[buffer->gap_end];
+    buffer->gap_start = buffer->gap_start + 1;
+    buffer->gap_end = buffer->gap_end + 1;
+    return 1;
 }
 
-size_t sye_buffer_copy_out(const sye_buffer_t *buffer, char *dest, size_t dest_capacity) {
-    size_t size;
-    size_t left_size;
-    size_t right_size;
-
-    if (!buffer || !dest || dest_capacity == 0U) {
-        return 0U;
+int sye_buffer_copy_out(const struct sye_buffer *buffer, char *dest, int dest_capacity) {
+    int size;
+    int left_size;
+    int right_size;
+    if (!buffer || !dest || dest_capacity == 0) {
+        return 0;
     }
-
     size = sye_buffer_size(buffer);
-    if (size + 1U > dest_capacity) {
-        size = dest_capacity - 1U;
+    if (size + 1 > dest_capacity) {
+        size = dest_capacity - 1;
     }
-
     left_size = buffer->gap_start < size ? buffer->gap_start : size;
-    memcpy(dest, buffer->base, left_size);
-
+    sye_memcpy(dest, buffer->base, left_size);
     right_size = size - left_size;
-    if (right_size > 0U) {
-        memcpy(dest + left_size, buffer->base + buffer->gap_end, right_size);
+    if (right_size > 0) {
+        sye_memcpy(dest + left_size, buffer->base + buffer->gap_end, right_size);
     }
-
     dest[size] = '\0';
     return size;
 }
 
-size_t sye_buffer_row(const sye_buffer_t *buffer) {
-    size_t row = 1U;
-    size_t i;
+int sye_buffer_row(const struct sye_buffer *buffer) {
+    int row = 1;
+    int i;
     if (!buffer) {
-        return 0U;
+        return 0;
     }
-
-    for (i = 0U; i < sye_buffer_point(buffer); ++i) {
+    for (i = 0; i < sye_buffer_point(buffer); i = i + 1) {
         if (sye_buffer_char_at(buffer, i) == '\n') {
-            row += 1U;
+            row = row + 1;
         }
     }
-
     return row;
 }
 
-size_t sye_buffer_col(const sye_buffer_t *buffer) {
-    size_t col = 0U;
-    size_t i;
+int sye_buffer_col(const struct sye_buffer *buffer) {
+    int col = 0;
+    int i;
     if (!buffer) {
-        return 0U;
+        return 0;
     }
-
-    for (i = 0U; i < sye_buffer_point(buffer); ++i) {
+    for (i = 0; i < sye_buffer_point(buffer); i = i + 1) {
         if (sye_buffer_char_at(buffer, i) == '\n') {
-            col = 0U;
+            col = 0;
         } else {
-            col += 1U;
+            col = col + 1;
         }
     }
-
     return col;
 }
 
-size_t sye_buffer_line_count(const sye_buffer_t *buffer) {
-    size_t lines = 1U;
-    size_t i;
-    size_t size;
-
+int sye_buffer_line_count(const struct sye_buffer *buffer) {
+    int lines = 1;
+    int i;
+    int size;
     if (!buffer) {
-        return 0U;
+        return 0;
     }
-
     size = sye_buffer_size(buffer);
-    if (size == 0U) {
-        return 1U;
+    if (size == 0) {
+        return 1;
     }
-
-    for (i = 0U; i < size; ++i) {
+    for (i = 0; i < size; i = i + 1) {
         if (sye_buffer_char_at(buffer, i) == '\n') {
-            lines += 1U;
+            lines = lines + 1;
         }
     }
-
     return lines;
 }

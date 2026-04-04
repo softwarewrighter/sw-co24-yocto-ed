@@ -1,6 +1,6 @@
 number = 3
 slug = "build-smoke"
-status = "pending"
+status = "in-progress"
 description = "Get the existing skeleton code compiling with tc24r and running on cor24-run...."
 role = "production"
 context_files = []
